@@ -9,37 +9,56 @@ import (
 	"github.com/miekg/pcap"
 )
 
+// We store the configuration of our local resolver in a global
+// variable for convenience.
 var (
 	resolv_conf	*dns.ClientConfig
 )
 
-type stub_resolve_result struct {
+// We have a goroutine to act as a stub resolver, and use this
+// structure to send the question in and get the results out.
+type stub_resolve_info struct {
 	ownername	string
+	rtype		uint16
 	answer		*dns.Msg
 }
 
-func stub_resolve(ownername string, rtype uint16,
-                  results chan<- stub_resolve_result) {
-	var result stub_resolve_result
-	result.ownername = ownername
+// A goroutine which performs stub lookups from a queue, writing
+// the results to another queue.
+func stub_resolve(questions <-chan stub_resolve_info,
+                  results chan<- stub_resolve_info) {
+	// make a client for our lookups
 	dnsClient := new(dns.Client)
 	dnsClient.Net = "tcp"
-	query := new(dns.Msg)
-	query.RecursionDesired = true
-	query.SetQuestion(ownername, rtype)
-	for _, server := range resolv_conf.Servers {
-		resolver := server + ":53"
-		r , _, err := dnsClient.Exchange(query, resolver)
-		if (err == nil) && (r != nil) && (r.Rcode == dns.RcodeSuccess) {
-			result.answer = r
-			results <- result
-			return
+	// read each question on our channel
+	for question := range questions {
+		// build our answer
+		var result stub_resolve_info = question
+		result.answer = nil
+		// make a DNS query based on our question
+		query := new(dns.Msg)
+		query.RecursionDesired = true
+		query.SetQuestion(question.ownername, question.rtype)
+		// check each resolver in turn
+		for _, server := range resolv_conf.Servers {
+			resolver := server + ":53"
+			r , _, err := dnsClient.Exchange(query, resolver)
+			// if we got an answer, use that and stop trying
+			if (err == nil) && (r != nil) && (r.Rcode == dns.RcodeSuccess) {
+				result.answer = r
+				break
+			}
 		}
+		// send back our answer (might be nil)
+		results <- result
 	}
-	result.answer = nil
-	results <- result
 }
 
+// Lookup all of the IP addresses associated with the root name servers.
+// Return two maps based on the results found, which have the keys of
+// the binary values of the IPv4 and IPv6 addresses. (It's a bit clumsy,
+// but it allows us to do quick and easy lookups of the addresses in the
+// pcap later.)
 func get_root_server_addresses() (map[[4]byte]bool, map[[16]byte]bool) {
 	// look up the NS of the IANA root
 	root_client := new(dns.Client)
@@ -61,10 +80,20 @@ func get_root_server_addresses() (map[[4]byte]bool, map[[16]byte]bool) {
 		}
 	}
 	// look up the addresses of the root servers
-	results := make(chan stub_resolve_result, len(root_servers))
+	questions := make(chan stub_resolve_info, 16)
+	results := make(chan stub_resolve_info, len(root_servers)*2)
+	for i := 0; i<8; i++ {
+		go stub_resolve(questions, results)
+	}
 	for _, ns := range root_servers {
-		go stub_resolve(ns, dns.TypeAAAA, results)
-		go stub_resolve(ns, dns.TypeA, results)
+		info := new(stub_resolve_info)
+		info.ownername = ns
+		info.rtype = dns.TypeAAAA
+		questions <- *info
+		info = new(stub_resolve_info)
+		info.ownername = ns
+		info.rtype = dns.TypeA
+		questions <- *info
 	}
 	root_addresses4 := make(map[[4]byte]bool)
 	root_addresses6 := make(map[[16]byte]bool)
@@ -89,12 +118,16 @@ func get_root_server_addresses() (map[[4]byte]bool, map[[16]byte]bool) {
 			}
 		}
 	}
+	close(questions)
 	return root_addresses4, root_addresses6
 }
 
+// Look in the named file and find any packets that are from our root
+// servers on port 53.
 func pcap2ymmv(fname string,
                root_addresses4 map[[4]byte]bool,
                root_addresses6 map[[16]byte]bool) {
+	// open our pcap file
 	file, err := os.Open(fname)
 	if err != nil {
 		log.Fatal(err)
@@ -105,45 +138,52 @@ func pcap2ymmv(fname string,
 	}
 
 	for {
+		// reach each packet
 		pkt := pcap_file.Next()
 		if pkt == nil {
 			break
 		}
 		pkt.Decode()
-		bogus := false
+
+		// parse each header so we can see if we want this packet
+		valid_ip := false
+		valid_udp := false
 		for _, hdr := range pkt.Headers {
 			switch hdr.(type) {
 			case *pcap.Iphdr:
-				// verify that this is an IPv6 packet
+				// check that the packet comes from one
+				// of the addresses that we are looking for
 				iphdr := hdr.(*pcap.Iphdr)
-				if iphdr.Version != 6 {
-					bogus = true
-					break
+				var addr [4]byte
+				copy(addr[:], iphdr.SrcIp[0:4])
+				_, found :=  root_addresses4[addr]
+				if found {
+					valid_ip = true
 				}
-				// check that it is from one of our
-				// desired addresses
+			case *pcap.Ip6hdr:
+				iphdr := hdr.(*pcap.Ip6hdr)
 				var addr [16]byte
 				copy(addr[:], iphdr.SrcIp[0:16])
 				_, found :=  root_addresses6[addr]
-				if !found {
-					bogus = true
-					break
+				if found {
+					valid_ip = true
 				}
 			case *pcap.Udphdr:
 				udphdr := hdr.(*pcap.Udphdr)
-				if udphdr.SrcPort != 53 {
-					bogus = true
-					break
+				if udphdr.SrcPort == 53 {
+					valid_udp = true
 				}
 			}
 		}
-		if !bogus {
+
+		if valid_ip && valid_udp {
 			fmt.Printf("Matched a packet!\n")
 		}
 	}
 	file.Close()
 }
 
+// Main function.
 func main() {
 	// initialize our stub resolver
 	var ( err error )
@@ -152,7 +192,10 @@ func main() {
 		log.Fatal(err)
 	}
 
+	// get root server addresses
 	root_addresses4, root_addresses6 := get_root_server_addresses()
+
+	// process each argument as a pcap file
 	for _, fname := range os.Args[1:] {
 		pcap2ymmv(fname, root_addresses4, root_addresses6)
 	}
