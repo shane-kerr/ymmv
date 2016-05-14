@@ -177,7 +177,33 @@ func pcap2ymmv(fname string,
 		}
 
 		if valid_ip && valid_udp {
-			fmt.Printf("Matched a packet!\n")
+			answer := new(dns.Msg)
+			answer.Unpack(pkt.Payload)
+			answer.Id = 0
+			query := answer.Copy()
+			query.Response = false
+			query.Authoritative = false
+			query.Truncated = false
+			query.AuthenticatedData = true
+			query.CheckingDisabled = false
+			query.Rcode = 0
+			query.Answer = nil
+			query.Ns = nil
+			old_extra := query.Extra
+			query.Extra = nil
+			// add our opt section back - probably not really
+			// what we want, but what else can we do?
+			if old_extra != nil {
+				for _, extra := range old_extra {
+					switch extra.(type) {
+					case *dns.OPT:
+						opt := extra.(*dns.OPT)
+						query.Extra = []dns.RR{opt}
+					}
+				}
+			}
+			fmt.Printf("%s\n", answer)
+			fmt.Printf("%s\n", query)
 		}
 	}
 	file.Close()
