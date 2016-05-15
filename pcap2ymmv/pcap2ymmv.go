@@ -1,10 +1,12 @@
 package main
 
 import (
-	"fmt"
+//	"fmt"
+	"encoding/binary"
 	"log"
 	"net"
 	"os"
+	"time"
 	"github.com/miekg/dns"
 	"github.com/miekg/pcap"
 )
@@ -122,6 +124,90 @@ func get_root_server_addresses() (map[[4]byte]bool, map[[16]byte]bool) {
 	return root_addresses4, root_addresses6
 }
 
+func ymmv_write(ip_family int, addr []byte, query dns.Msg,
+		answer_time time.Time, answer dns.Msg) {
+	// output magic value
+	_, err := os.Stdout.Write([]byte("ymmv"))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// output address family
+	if ip_family == 4 {
+		_, err = os.Stdout.Write([]byte("4"))
+	} else if ip_family == 6 {
+		_, err = os.Stdout.Write([]byte("6"))
+	} else {
+		log.Fatal("Unknown ip_family %d\n", ip_family)
+	}
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// output (U)DP or (T)CP
+	_, err = os.Stdout.Write([]byte("u"))	// only support UDP for now...
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// output actual address
+	_, err = os.Stdout.Write(addr)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// output when the query happened (we don't know, so use 0)
+	_, err = os.Stdout.Write([]byte{0, 0, 0, 0, 0, 0, 0, 0})
+
+	// write the byte count of our query
+	query_bytes, err := query.Pack()
+	if err != nil {
+		log.Fatal(err)
+	}
+	query_len := uint16(len(query_bytes))
+	err = binary.Write(os.Stdout, binary.BigEndian, query_len)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// write our query
+	_, err = os.Stdout.Write(query_bytes)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// output when the answer arrived
+	seconds := uint32(answer_time.Second())
+	err = binary.Write(os.Stdout, binary.BigEndian, seconds)
+	if err != nil {
+		log.Fatal(err)
+	}
+	nanoseconds := uint32(answer_time.Nanosecond())
+	err = binary.Write(os.Stdout, binary.BigEndian, nanoseconds)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// write the byte count of our answer
+	answer_bytes, err := answer.Pack()
+	if err != nil {
+		log.Fatal(err)
+	}
+	answer_len := uint16(len(answer_bytes))
+	err = binary.Write(os.Stdout, binary.BigEndian, answer_len)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// write our query
+	_, err = os.Stdout.Write(answer_bytes)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// XXX: do we need to flush?
+}
+
 // Look in the named file and find any packets that are from our root
 // servers on port 53.
 func pcap2ymmv(fname string,
@@ -146,7 +232,8 @@ func pcap2ymmv(fname string,
 		pkt.Decode()
 
 		// parse each header so we can see if we want this packet
-		valid_ip := false
+		ip_family := 0
+		var ip_addr []byte
 		valid_udp := false
 		for _, hdr := range pkt.Headers {
 			switch hdr.(type) {
@@ -158,7 +245,9 @@ func pcap2ymmv(fname string,
 				copy(addr[:], iphdr.SrcIp[0:4])
 				_, found :=  root_addresses4[addr]
 				if found {
-					valid_ip = true
+					ip_family = 4
+					ip_addr = make([]byte, 4)
+					copy(ip_addr[:], addr[0:4])
 				}
 			case *pcap.Ip6hdr:
 				iphdr := hdr.(*pcap.Ip6hdr)
@@ -166,7 +255,9 @@ func pcap2ymmv(fname string,
 				copy(addr[:], iphdr.SrcIp[0:16])
 				_, found :=  root_addresses6[addr]
 				if found {
-					valid_ip = true
+					ip_family = 6
+					ip_addr = make([]byte, 16)
+					copy(ip_addr[:], addr[0:16])
 				}
 			case *pcap.Udphdr:
 				udphdr := hdr.(*pcap.Udphdr)
@@ -176,7 +267,7 @@ func pcap2ymmv(fname string,
 			}
 		}
 
-		if valid_ip && valid_udp {
+		if (ip_family != 0) && valid_udp {
 			answer := new(dns.Msg)
 			answer.Unpack(pkt.Payload)
 			answer.Id = 0
@@ -202,8 +293,10 @@ func pcap2ymmv(fname string,
 					}
 				}
 			}
-			fmt.Printf("%s\n", answer)
-			fmt.Printf("%s\n", query)
+			ymmv_write(ip_family, ip_addr,
+				   *query, pkt.Time, *answer)
+//			fmt.Printf("%s\n", answer)
+//			fmt.Printf("%s\n", query)
 		}
 	}
 	file.Close()
