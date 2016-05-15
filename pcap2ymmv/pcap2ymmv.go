@@ -304,10 +304,13 @@ func pcap2ymmv(fname string,
 			}
 		}
 
+		// if we got a valid IP and UDP packet, process it
 		if (ip_family != 0) && valid_udp {
+			// parse the payload as the DNS message
 			answer := new(dns.Msg)
 			answer.Unpack(pkt.Payload)
 			answer.Id = 0
+			// infer the answer and build that
 			query := answer.Copy()
 			query.Response = false
 			query.Authoritative = false
