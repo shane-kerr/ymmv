@@ -34,10 +34,6 @@ func parse_root_server_addresses(addrs []string)(map[[4]byte]bool, map[[16]byte]
 			// IPv6 address
 			var aaaa [16]byte
 			copy(aaaa[:], ip[0:16])
-			for i, b := range aaaa {
-				fmt.Fprintf(os.Stderr, "a  %d:[%s]\n", i, b)
-				fmt.Fprintf(os.Stderr, "ip %d:[%s]\n", i, ip[i])
-			}
 			root_addresses6[aaaa] = true
 		} else {
 			// IPv4 address
@@ -46,7 +42,6 @@ func parse_root_server_addresses(addrs []string)(map[[4]byte]bool, map[[16]byte]
 			root_addresses4[a] = true
 		}
 	}
-	fmt.Fprintf(os.Stderr, "%s\n" ,root_addresses4)
 	return root_addresses4, root_addresses6
 }
 
