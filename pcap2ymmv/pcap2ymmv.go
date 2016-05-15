@@ -1,7 +1,7 @@
 package main
 
 import (
-//	"fmt"
+	"fmt"
 	"encoding/binary"
 	"log"
 	"net"
@@ -11,11 +11,44 @@ import (
 	"github.com/miekg/pcap"
 )
 
-// We store the configuration of our local resolver in a global
-// variable for convenience.
 var (
+	// We store the configuration of our local resolver in a global
+	// variable for convenience.
 	resolv_conf	*dns.ClientConfig
+
+	// Use a global debug flag.
+	debug		bool
 )
+
+// If we were passed name server addresses, parse them with this function.
+func parse_root_server_addresses(addrs []string)(map[[4]byte]bool, map[[16]byte]bool) {
+	if debug {
+		fmt.Fprintf(os.Stderr, "parse_root_server_addresses()\n")
+		fmt.Fprintf(os.Stderr, "addrs:%s\n", addrs)
+	}
+	root_addresses4 := make(map[[4]byte]bool)
+	root_addresses6 := make(map[[16]byte]bool)
+	for _, addr := range addrs {
+		ip := net.ParseIP(addr)
+		if ip.To4() == nil {
+			// IPv6 address
+			var aaaa [16]byte
+			copy(aaaa[:], ip[0:16])
+			for i, b := range aaaa {
+				fmt.Fprintf(os.Stderr, "a  %d:[%s]\n", i, b)
+				fmt.Fprintf(os.Stderr, "ip %d:[%s]\n", i, ip[i])
+			}
+			root_addresses6[aaaa] = true
+		} else {
+			// IPv4 address
+			var a [4]byte
+			copy(a[:], ip.To4()[0:4])
+			root_addresses4[a] = true
+		}
+	}
+	fmt.Fprintf(os.Stderr, "%s\n" ,root_addresses4)
+	return root_addresses4, root_addresses6
+}
 
 // We have a goroutine to act as a stub resolver, and use this
 // structure to send the question in and get the results out.
@@ -61,7 +94,10 @@ func stub_resolve(questions <-chan stub_resolve_info,
 // the binary values of the IPv4 and IPv6 addresses. (It's a bit clumsy,
 // but it allows us to do quick and easy lookups of the addresses in the
 // pcap later.)
-func get_root_server_addresses() (map[[4]byte]bool, map[[16]byte]bool) {
+func lookup_root_server_addresses() (map[[4]byte]bool, map[[16]byte]bool) {
+	if debug {
+		fmt.Fprintf(os.Stderr, "lookup_root_server_addresses()\n")
+	}
 	// look up the NS of the IANA root
 	root_client := new(dns.Client)
 	root_client.Net = "tcp"
@@ -115,7 +151,7 @@ func get_root_server_addresses() (map[[4]byte]bool, map[[16]byte]bool) {
 			case *dns.A:
 				a_s := root_address.(*dns.A).A.String()
 				var a [4]byte
-				copy(a[:], net.ParseIP(a_s)[0:4])
+				copy(a[:], net.ParseIP(a_s).To4()[0:4])
 				root_addresses4[a] = true
 			}
 		}
@@ -308,6 +344,12 @@ func pcap2ymmv(fname string,
 
 // Main function.
 func main() {
+	// turn on debugging if desired
+	if (len(os.Args) > 1) && (os.Args[1] == "-d") {
+		debug = true
+		os.Args = append(os.Args[:1], os.Args[2:]...)
+	}
+
 	// initialize our stub resolver
 	var ( err error )
 	resolv_conf, err = dns.ClientConfigFromFile("/etc/resolv.conf")
@@ -316,10 +358,14 @@ func main() {
 	}
 
 	// get root server addresses
-	root_addresses4, root_addresses6 := get_root_server_addresses()
-
-	// process each argument as a pcap file
-	for _, fname := range os.Args[1:] {
-		pcap2ymmv(fname, root_addresses4, root_addresses6)
+	var root_addresses4 map[[4]byte]bool
+	var root_addresses6 map[[16]byte]bool
+	if len(os.Args) > 1 {
+		root_addresses4, root_addresses6 = parse_root_server_addresses(os.Args[1:])
+	} else {
+		root_addresses4, root_addresses6 = lookup_root_server_addresses()
 	}
+
+	// process stdin as a pcap file
+	pcap2ymmv("-", root_addresses4, root_addresses6)
 }

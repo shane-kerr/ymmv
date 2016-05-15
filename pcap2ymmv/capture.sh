@@ -35,5 +35,7 @@ trap shutdown_capture EXIT
 
 # now just hang out
 while true; do
-  ./pcap2ymmv $WORK_DIR/pipe >> ymmv.dat
+  ./pcap2ymmv < $WORK_DIR/pipe >> ymmv.dat
+  # could also specify specific root servers, like this:
+  # ./pcap2ymmv 192.228.79.201 < $WORK_DIR/pipe >> ymmv.dat
 done
