@@ -214,9 +214,15 @@ func pcap2ymmv(fname string,
                root_addresses4 map[[4]byte]bool,
                root_addresses6 map[[16]byte]bool) {
 	// open our pcap file
-	file, err := os.Open(fname)
-	if err != nil {
-		log.Fatal(err)
+	var file *os.File
+	if fname == "-" {
+		file = os.Stdin
+	} else {
+		named_file, err := os.Open(fname)
+		if err != nil {
+			log.Fatal(err)
+		}
+		file = named_file
 	}
 	pcap_file, err := pcap.NewReader(file)
 	if err != nil {
@@ -295,8 +301,6 @@ func pcap2ymmv(fname string,
 			}
 			ymmv_write(ip_family, ip_addr,
 				   *query, pkt.Time, *answer)
-//			fmt.Printf("%s\n", answer)
-//			fmt.Printf("%s\n", query)
 		}
 	}
 	file.Close()
