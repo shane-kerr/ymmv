@@ -230,7 +230,7 @@ func ymmv_write(ip_family int, addr []byte, query dns.Msg,
 		log.Fatal(err)
 	}
 
-	// write our query
+	// write our answer
 	_, err = os.Stdout.Write(answer_bytes)
 	if err != nil {
 		log.Fatal(err)
