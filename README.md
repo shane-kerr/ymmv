@@ -47,21 +47,21 @@ To build the `pcap` to `ymmv` filter/converter:
 
 To build the `ymmv` program itself:
 
-   $ cd ymmv
-   $ go build
+    $ cd ymmv
+    $ go build
 
 Running
 =======
 A shell script which writes `tcpdump` output to a file is in the
 `pcap2ymmv` directory, and can be used like this:
 
-   $ sudo sh capture.sh eth0
+    $ sudo sh capture.sh eth0
 
 For now this will create `ymmv.dat`, although the expectation is that
 this will be able to be used as input for the `ymmv` program later,
 like this:
 
-   $ sudo sh capture.sh eth0 | ymmv --mail-logs
+    $ sudo sh capture.sh eth0 | ymmv --mail-logs
 
 
 Limitations
