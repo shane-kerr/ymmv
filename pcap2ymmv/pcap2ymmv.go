@@ -208,7 +208,7 @@ func ymmv_write(ip_family int, addr []byte, query dns.Msg,
 	}
 
 	// output when the answer arrived
-	seconds := uint32(answer_time.Second())
+	seconds := uint32(answer_time.Unix())
 	err = binary.Write(os.Stdout, binary.BigEndian, seconds)
 	if err != nil {
 		log.Fatal(err)
@@ -237,6 +237,40 @@ func ymmv_write(ip_family int, addr []byte, query dns.Msg,
 	}
 
 	// XXX: do we need to flush?
+}
+
+func parse_query(raw_answer []byte) (*dns.Msg, *dns.Msg, error) {
+	// parse the query
+	answer := new(dns.Msg)
+	err := answer.Unpack(raw_answer)
+	if err != nil {
+		return nil, nil, err
+	}
+	answer.Id = 0
+	// infer the answer and build that
+	query := answer.Copy()
+	query.Response = false
+	query.Authoritative = false
+	query.Truncated = false
+	query.AuthenticatedData = true
+	query.CheckingDisabled = false
+	query.Rcode = 0
+	query.Answer = nil
+	query.Ns = nil
+	old_extra := query.Extra
+	query.Extra = nil
+	// add our opt section back - probably not really
+	// what we want, but what else can we do?
+	if old_extra != nil {
+		for _, extra := range old_extra {
+			switch extra.(type) {
+			case *dns.OPT:
+				opt := extra.(*dns.OPT)
+				query.Extra = []dns.RR{opt}
+			}
+		}
+	}
+	return query, answer, nil
 }
 
 // Look in the named file and find any packets that are from our root
@@ -307,34 +341,13 @@ func pcap2ymmv(fname string,
 		// if we got a valid IP and UDP packet, process it
 		if (ip_family != 0) && valid_udp {
 			// parse the payload as the DNS message
-			answer := new(dns.Msg)
-			answer.Unpack(pkt.Payload)
-			answer.Id = 0
-			// infer the answer and build that
-			query := answer.Copy()
-			query.Response = false
-			query.Authoritative = false
-			query.Truncated = false
-			query.AuthenticatedData = true
-			query.CheckingDisabled = false
-			query.Rcode = 0
-			query.Answer = nil
-			query.Ns = nil
-			old_extra := query.Extra
-			query.Extra = nil
-			// add our opt section back - probably not really
-			// what we want, but what else can we do?
-			if old_extra != nil {
-				for _, extra := range old_extra {
-					switch extra.(type) {
-					case *dns.OPT:
-						opt := extra.(*dns.OPT)
-						query.Extra = []dns.RR{opt}
-					}
-				}
+			query, answer, err := parse_query(pkt.Payload)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error unpacking DNS message: %s\n", err)
+			} else {
+				ymmv_write(ip_family, ip_addr,
+					   *query, pkt.Time, *answer)
 			}
-			ymmv_write(ip_family, ip_addr,
-				   *query, pkt.Time, *answer)
 		}
 	}
 	file.Close()
