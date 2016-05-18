@@ -28,11 +28,11 @@ The contents of each query/answer pair are:
 
 * 16-bit length of DNS query
 
-* DNS message raw bytes
+* DNS query raw bytes
 
-* 32-bit Unix epoch of query
+* 32-bit Unix epoch of answer
 
-* 32-bit nanoseconds of query
+* 32-bit nanoseconds of answer
 
 * 16-bit length of DNS answer
 
