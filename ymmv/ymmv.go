@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -11,7 +12,7 @@ import (
 	"github.com/miekg/dns"
 )
 
-type ymmv_query struct {
+type ymmv_message struct {
 	ip_family	byte
 	ip_protocol	byte
 	addr		*net.IP
@@ -21,8 +22,48 @@ type ymmv_query struct {
 	answer		*dns.Msg
 }
 
+func pad_right(s string, length int, pad string) string {
+	// if a string is longer than the desired length already, just use it
+	if len(s) >= length {
+		return s
+	}
+	// add our padding string until we are long enough
+	for len(s) < length {
+		s += pad
+	}
+	// truncate on our return, since our padding string may be multiple
+	// characters and result in a string longer than we want
+	return s[:length]
+}
+
+func (y ymmv_message) print() {
+	var protocol_str string
+	if y.ip_protocol == 'u' {
+		protocol_str = "UDP"
+	} else {
+		protocol_str = "TCP"
+	}
+	header := fmt.Sprintf("===[ ymmv message (IPv%d, %s, %s) ]",
+			      y.ip_family, protocol_str, y.addr)
+	fmt.Printf("%s\n", pad_right(header, 78, "="))
+	fmt.Printf("%s\n", y.query)
+	if y.query_time.Unix() == 0 {
+		fmt.Printf(";; WHEN: unknown\n")
+	} else {
+		fmt.Printf(";; WHEN: %s\n", y.query_time)
+	}
+	fmt.Printf("%s\n", pad_right("", 78, "-"))
+	fmt.Printf("%s\n", y.answer)
+	if y.answer_time.Unix() == 0 {
+		fmt.Printf(";; WHEN: unknown\n")
+	} else {
+		fmt.Printf(";; WHEN: %s\n", y.answer_time)
+	}
+	fmt.Printf("%s\n", pad_right("", 78, "-"))
+}
+
 // TODO: return more details with err if underlying calls fail
-func read_next_query() (y *ymmv_query, err error) {
+func read_next_message() (y *ymmv_message, err error) {
 	magic := make([]byte, 4, 4)
 	nread, err := os.Stdin.Read(magic)
 	if err != nil {
@@ -143,7 +184,7 @@ func read_next_query() (y *ymmv_query, err error) {
 	answer := new(dns.Msg)
 	answer.Unpack(answer_raw)
 
-	var result ymmv_query
+	var result ymmv_message
 	result.ip_family = byte(ip_family)
 	result.ip_protocol = protocol[0]
 	result.addr = new(net.IP)
@@ -158,9 +199,15 @@ func read_next_query() (y *ymmv_query, err error) {
 
 // Main function.
 func main() {
-	_, err := read_next_query()
-	if err != nil {
-		log.Fatal(err)
+	for {
+		y , err := read_next_message()
+		if (err != nil) && (err != io.EOF) {
+			log.Fatal(err)
+		}
+		if y == nil {
+			break
+		}
+		y.print()
 	}
 }
 
