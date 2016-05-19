@@ -197,8 +197,30 @@ func read_next_message() (y *ymmv_message, err error) {
 	return &result, nil
 }
 
+func lookup_yeti_servers() []net.IP {
+	return nil
+}
+
+type yeti_server_selection struct {
+	next_server int
+	ips []net.IP
+}
+
 // Main function.
 func main() {
+	var servers yeti_server_selection
+	if len(os.Args) > 1 {
+		for _, server := range os.Args[1:] {
+			ip := net.ParseIP(server)
+			if ip == nil {
+				log.Fatalf("Unrecognized IP address '%s'\n", server)
+			}
+			servers.ips = append(servers.ips, net.ParseIP(server))
+		}
+	} else {
+		servers.ips = lookup_yeti_servers()
+	}
+	fmt.Printf("%s\n", servers.ips)
 	for {
 		y , err := read_next_message()
 		if (err != nil) && (err != io.EOF) {
@@ -207,7 +229,6 @@ func main() {
 		if y == nil {
 			break
 		}
-		y.print()
 	}
 }
 
