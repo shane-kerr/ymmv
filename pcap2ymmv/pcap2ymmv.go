@@ -133,8 +133,8 @@ func lookup_root_server_addresses() (map[[4]byte]bool, map[[16]byte]bool) {
 	for i := 0; i<len(root_servers)*2; i++ {
 		response := <-results
 		if response.answer == nil {
-			log.Fatal("Error looking up root server %s",
-			          response.ownername)
+			log.Fatalf("Error looking up root server %s",
+			           response.ownername)
 		}
 		for _, root_address := range response.answer.Answer {
 			switch root_address.(type) {
@@ -169,7 +169,7 @@ func ymmv_write(ip_family int, addr []byte, query dns.Msg,
 	} else if ip_family == 6 {
 		_, err = os.Stdout.Write([]byte("6"))
 	} else {
-		log.Fatal("Unknown ip_family %d\n", ip_family)
+		log.Fatalf("Unknown ip_family %d\n", ip_family)
 	}
 	if err != nil {
 		log.Fatal(err)
