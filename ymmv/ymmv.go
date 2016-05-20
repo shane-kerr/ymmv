@@ -92,7 +92,8 @@ func read_next_message() (y *ymmv_message, err error) {
 	} else if tmp_ip_family[0] == '6' {
 		ip_family = 6
 	} else {
-		errmsg := fmt.Sprintf("Expecting '4' or '6' for IP family, got '%s'", ip_family)
+		errmsg := fmt.Sprintf("Expecting '4' or '6' for IP family, got '%s'",
+				      ip_family)
 		return nil, errors.New(errmsg)
 	}
 
@@ -105,7 +106,8 @@ func read_next_message() (y *ymmv_message, err error) {
 		return nil, errors.New("Couldn't read TCP or UDP")
 	}
 	if (protocol[0] != 'u') && (protocol[0] != 't') {
-		errmsg := fmt.Sprintf("Expecting 't'cp or 'u'dp for protocol, got '%s'", protocol)
+		errmsg := fmt.Sprintf("Expecting 't'cp or 'u'dp for protocol, got '%s'",
+				      protocol)
 		return nil, errors.New(errmsg)
 	}
 
@@ -121,7 +123,8 @@ func read_next_message() (y *ymmv_message, err error) {
 		return nil, err
 	}
 	if nread != cap(tmp_addr) {
-		errmsg := fmt.Sprintf("Only read %d of %d bytes of address", nread, cap(tmp_addr))
+		errmsg := fmt.Sprintf("Only read %d of %d bytes of address",
+				      nread, cap(tmp_addr))
 		return nil, errors.New(errmsg)
 	}
 	addr := net.IP(tmp_addr)
@@ -198,7 +201,16 @@ func read_next_message() (y *ymmv_message, err error) {
 }
 
 func lookup_yeti_servers() []net.IP {
-	return nil
+	root_client := new(dns.Client)
+	root_client.Net = "tcp"
+	ns_query = new(dns.Msg)
+	ns_query.SetQuestion(".", dns.TypeNS)
+	// TODO: avoid hard-coding a particular root server here
+	ns_response, _, err := root_client.Exchange(ns_query,
+						    "yeti-ns.wide.ad.jp.")
+	if err != nil {
+		log.Fatal("Error looking up Yeti root servers")
+	}
 }
 
 type yeti_server_selection struct {
@@ -213,7 +225,8 @@ func main() {
 		for _, server := range os.Args[1:] {
 			ip := net.ParseIP(server)
 			if ip == nil {
-				log.Fatalf("Unrecognized IP address '%s'\n", server)
+				log.Fatalf("Unrecognized IP address '%s'\n",
+					   server)
 			}
 			servers.ips = append(servers.ips, net.ParseIP(server))
 		}
