@@ -10,6 +10,7 @@ import (
 	"os"
 	"time"
 	"github.com/miekg/dns"
+	"github.com/shane-kerr/ymmv/dnsstub"
 )
 
 type ymmv_message struct {
@@ -201,16 +202,42 @@ func read_next_message() (y *ymmv_message, err error) {
 }
 
 func lookup_yeti_servers() []net.IP {
+	// get the list of root servers from a known Yeti root server
 	root_client := new(dns.Client)
 	root_client.Net = "tcp"
-	ns_query = new(dns.Msg)
+	ns_query := new(dns.Msg)
 	ns_query.SetQuestion(".", dns.TypeNS)
 	// TODO: avoid hard-coding a particular root server here
 	ns_response, _, err := root_client.Exchange(ns_query,
-						    "yeti-ns.wide.ad.jp.")
+						    "yeti-ns.wide.ad.jp.:53")
 	if err != nil {
-		log.Fatal("Error looking up Yeti root servers")
+		log.Fatalf("Error looking up Yeti root server NS; %s", err)
 	}
+
+	// lookup the addresses of some of our Yeti servers
+	resolver, err := dnsstub.Init(16)
+	if err != nil {
+		log.Fatalf("Error setting up DNS stub resolver: %s\n", err)
+	}
+//	num_root_servers := len(ns_response.Answer)
+	for _, root_server := range ns_response.Answer {
+		switch root_server.(type) {
+		case *dns.NS:
+			ns := root_server.(*dns.NS).Ns
+			resolver.Query(ns, dns.TypeAAAA)
+		}
+	}
+	ips := make([]net.IP, 1, 1)
+	for _ = range ns_response.Answer {
+		answer, err := resolver.Wait()
+		if err != nil {
+		}
+		if answer != nil {
+		}
+	}
+	resolver.Close()
+
+	return ips
 }
 
 type yeti_server_selection struct {
