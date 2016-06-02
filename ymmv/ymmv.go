@@ -208,20 +208,15 @@ func lookup_yeti_servers() []net.IP {
 	root_client.Net = "tcp"
 	ns_query := new(dns.Msg)
 	ns_query.SetQuestion(".", dns.TypeNS)
-	id, err := dnsstub.RandUint16()
-	if err != nil {
-		log.Fatalf("Error generating random query ID; %s", err)
-	}
-	ns_query.Id = id
+	ns_query.RecursionDesired = true
 	// TODO: avoid hard-coding a particular root server here
-	ns_response, _, err := root_client.Exchange(ns_query,
-						    "yeti-ns.wide.ad.jp.:53")
+	ns_response, _, err := dnsstub.DnsQuery("yeti-ns.wide.ad.jp.:53", ns_query)
 	if err != nil {
 		log.Fatalf("Error looking up Yeti root server NS; %s", err)
 	}
 
 	// lookup the addresses of some of our Yeti servers
-	resolver, err := dnsstub.Init(16)
+	resolver, err := dnsstub.Init(16, nil)
 	if err != nil {
 		log.Fatalf("Error setting up DNS stub resolver: %s\n", err)
 	}
@@ -236,7 +231,7 @@ func lookup_yeti_servers() []net.IP {
 	for n := range ns_response.Answer {
 	        fmt.Printf("\rLooking up Yeti root servers [%d/%d]",
 			   n, len(ns_response.Answer))
-		answer, qname, _, err := resolver.Wait()
+		answer, _, qname, _, err := resolver.Wait()
 		if err != nil {
 			fmt.Printf("\nError looking up %s: %s\n", qname, err)
 		}
@@ -261,6 +256,7 @@ type yeti_server_set struct {
 	algorithm string
 	ips []net.IP
 	rtt_msec []int
+//	rtt_times []time.Duration
 	next_server int
 }
 
@@ -294,19 +290,15 @@ func (srvs *yeti_server_set) next() (ips []net.IP) {
 
 func yeti_query(srvs *yeti_server_set, query *dns.Msg) (result *dns.Msg, err error) {
 	for _, ip := range srvs.next() {
-		client := new(dns.Client)
-		id, err := dnsstub.RandUint16()
-		if err != nil {
-			log.Fatalf("Error generating random query ID; %s", err)
-		}
-		new_query := *query
-		new_query.Id = id
-//		resp, qtime, err := client.Exchange(&new_query, "["+ip.String()+"]:53")
-		_, _, err = client.Exchange(&new_query, "["+ip.String()+"]:53")
+		server := "[" + ip.String() + "]:53"
+//		resp, qtime, err := dnsstub.DnsQuery(server, query)
+        	fmt.Printf("Sending query to %s...", server)
+		_, qtime, err := dnsstub.DnsQuery(server, query)
 		if err != nil {
 			// XXX: fix error handling
 			fmt.Printf("Error querying Yeti root server; %s\n", err)
 		}
+        	fmt.Printf("done. (%s)\n", qtime)
 	}
 	return nil, nil
 }
@@ -317,6 +309,7 @@ func main() {
 	if len(os.Args) > 1 {
 		for _, server := range os.Args[1:] {
 			ip := net.ParseIP(server)
+			// TODO: allow host name here
 			if ip == nil {
 				log.Fatalf("Unrecognized IP address '%s'\n",
 					   server)
