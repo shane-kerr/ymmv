@@ -2,6 +2,8 @@ package dnsstub
 //package main
 
 import (
+	"math/big"
+	"crypto/rand"
 	"fmt"
 	"github.com/miekg/dns"
 )
@@ -28,9 +30,24 @@ type StubResolver struct {
 	finished_answers	[]*answer
 }
 
+func RandUint16() (uint16, error) {
+	var id_max big.Int
+	id_max.SetUint64(65536)
+	id, err := rand.Int(rand.Reader, &id_max)
+	if err != nil {
+		return 0, err
+	}
+	return uint16(id.Uint64()), nil
+}
+
 func query_resolver(resolver string, query *dns.Msg) (*dns.Msg, error) {
 	// try to query first in UDP
 	dnsClient := new(dns.Client)
+	id, err := RandUint16()
+	if err != nil {
+		return nil, err
+	}
+	query.Id = id
 	r, _, err := dnsClient.Exchange(query, resolver)
 	if err != nil {
 		return nil, err
@@ -50,7 +67,6 @@ func query_resolver(resolver string, query *dns.Msg) (*dns.Msg, error) {
 
 func stub_resolve(resolv_conf *dns.ClientConfig, queries <-chan *query, answers chan<- *answer) {
 	for q := range queries {
-		fmt.Printf("stub_resolve, q is %s\n", q)
 		dns_query := new(dns.Msg)
 		dns_query.RecursionDesired = true
 		dns_query.SetQuestion(q.qname, q.rtype)
@@ -95,7 +111,7 @@ func (resolver *StubResolver) Query(qname string, rtype uint16) (handle int) {
 	return q.handle
 }
 
-func (resolver *StubResolver) Wait() (*dns.Msg, error) {
+func (resolver *StubResolver) Wait() (*dns.Msg, string, uint16, error) {
 	var a *answer
 	// if we have waiting finished answers, return one of them
 	if len(resolver.finished_answers) > 0 {
@@ -105,21 +121,21 @@ func (resolver *StubResolver) Wait() (*dns.Msg, error) {
 	} else {
 		a = <-resolver.answers
 	}
-	return a.answer, a.err
+	return a.answer, a.qname, a.rtype, a.err
 }
 
-func (resolver *StubResolver) WaitByHandle(handle int) (*dns.Msg, error) {
+func (resolver *StubResolver) WaitByHandle(handle int) (*dns.Msg, string, uint16, error) {
 	// check any existing finished answers to see if we have ours
 	for n, a := range resolver.finished_answers {
 		if a.handle == handle {
 			resolver.finished_answers = append(resolver.finished_answers[:n], resolver.finished_answers[n+1:]...)
-			return a.answer, a.err
+			return a.answer, a.qname, a.rtype, a.err
 		}
 	}
 	for {
 		a := <-resolver.answers
 		if a.handle == handle {
-			return a.answer, a.err
+			return a.answer, a.qname, a.rtype, a.err
 		}
 		resolver.finished_answers = append(resolver.finished_answers, a)
 	}
