@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net"
 	"os"
 	"time"
@@ -207,6 +208,11 @@ func lookup_yeti_servers() []net.IP {
 	root_client.Net = "tcp"
 	ns_query := new(dns.Msg)
 	ns_query.SetQuestion(".", dns.TypeNS)
+	id, err := dnsstub.RandUint16()
+	if err != nil {
+		log.Fatalf("Error generating random query ID; %s", err)
+	}
+	ns_query.Id = id
 	// TODO: avoid hard-coding a particular root server here
 	ns_response, _, err := root_client.Exchange(ns_query,
 						    "yeti-ns.wide.ad.jp.:53")
@@ -219,7 +225,6 @@ func lookup_yeti_servers() []net.IP {
 	if err != nil {
 		log.Fatalf("Error setting up DNS stub resolver: %s\n", err)
 	}
-//	num_root_servers := len(ns_response.Answer)
 	for _, root_server := range ns_response.Answer {
 		switch root_server.(type) {
 		case *dns.NS:
@@ -227,27 +232,88 @@ func lookup_yeti_servers() []net.IP {
 			resolver.Query(ns, dns.TypeAAAA)
 		}
 	}
-	ips := make([]net.IP, 1, 1)
-	for _ = range ns_response.Answer {
-		answer, err := resolver.Wait()
+	ips := make([]net.IP, 0, 1)
+	for n := range ns_response.Answer {
+	        fmt.Printf("\rLooking up Yeti root servers [%d/%d]",
+			   n, len(ns_response.Answer))
+		answer, qname, _, err := resolver.Wait()
 		if err != nil {
+			fmt.Printf("\nError looking up %s: %s\n", qname, err)
 		}
 		if answer != nil {
+			for _, root_address := range answer.Answer {
+				switch root_address.(type) {
+				case *dns.AAAA:
+					aaaa := root_address.(*dns.AAAA).AAAA
+					ips = append(ips, aaaa)
+				}
+			}
 		}
 	}
+        fmt.Printf("\rLooking up Yeti root servers [%d/%d]\n",
+		   len(ns_response.Answer), len(ns_response.Answer))
 	resolver.Close()
 
 	return ips
 }
 
-type yeti_server_selection struct {
-	next_server int
+type yeti_server_set struct {
+	algorithm string
 	ips []net.IP
+	rtt_msec []int
+	next_server int
+}
+
+func init_yeti_server_set(algorithm string, ips []net.IP) (srvs *yeti_server_set) {
+	// TODO: check algorithm is "round-robin", "random", "all", or "rtt"
+	srvs = new(yeti_server_set)
+	srvs.algorithm = algorithm
+	if len(ips) == 0 {
+		srvs.ips = lookup_yeti_servers()
+	} else {
+		srvs.ips = ips
+	}
+	srvs.rtt_msec = make([]int, len(srvs.ips), len(srvs.ips))
+	srvs.next_server = 0
+	return srvs
+}
+
+func (srvs *yeti_server_set) next() (ips []net.IP) {
+	ips = make([]net.IP, 0, 0)
+	if srvs.algorithm == "round-robin" {
+		ips = append(ips, srvs.ips[srvs.next_server])
+		srvs.next_server = (srvs.next_server + 1) % len(srvs.ips)
+	} else if srvs.algorithm == "all" {
+		ips = srvs.ips
+	} else if srvs.algorithm == "random" {
+		// XXX: should seed the random number generator
+		ips = append(ips, srvs.ips[rand.Intn(len(srvs.ips))])
+	}
+	return ips
+}
+
+func yeti_query(srvs *yeti_server_set, query *dns.Msg) (result *dns.Msg, err error) {
+	for _, ip := range srvs.next() {
+		client := new(dns.Client)
+		id, err := dnsstub.RandUint16()
+		if err != nil {
+			log.Fatalf("Error generating random query ID; %s", err)
+		}
+		new_query := *query
+		new_query.Id = id
+//		resp, qtime, err := client.Exchange(&new_query, "["+ip.String()+"]:53")
+		_, _, err = client.Exchange(&new_query, "["+ip.String()+"]:53")
+		if err != nil {
+			// XXX: fix error handling
+			fmt.Printf("Error querying Yeti root server; %s\n", err)
+		}
+	}
+	return nil, nil
 }
 
 // Main function.
 func main() {
-	var servers yeti_server_selection
+	ips := make([]net.IP, 0, 0)
 	if len(os.Args) > 1 {
 		for _, server := range os.Args[1:] {
 			ip := net.ParseIP(server)
@@ -255,12 +321,15 @@ func main() {
 				log.Fatalf("Unrecognized IP address '%s'\n",
 					   server)
 			}
-			servers.ips = append(servers.ips, net.ParseIP(server))
+			if ip.To4() != nil {
+				log.Fatalf("IP address '%s' is not an IPv6 address\n",
+					   ip)
+			}
+			ips = append(ips, ip)
 		}
-	} else {
-		servers.ips = lookup_yeti_servers()
 	}
-	fmt.Printf("%s\n", servers.ips)
+	servers := init_yeti_server_set("round-robin", ips)
+	servers.algorithm = "random"
 	for {
 		y , err := read_next_message()
 		if (err != nil) && (err != io.EOF) {
@@ -269,6 +338,7 @@ func main() {
 		if y == nil {
 			break
 		}
+		yeti_query(servers, y.query)
 	}
 }
 
