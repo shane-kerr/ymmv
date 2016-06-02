@@ -4,24 +4,24 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/miekg/dns"
+	"github.com/shane-kerr/ymmv/dnsstub"
 	"io"
 	"log"
 	"math/rand"
 	"net"
 	"os"
 	"time"
-	"github.com/miekg/dns"
-	"github.com/shane-kerr/ymmv/dnsstub"
 )
 
 type ymmv_message struct {
-	ip_family	byte
-	ip_protocol	byte
-	addr		*net.IP
-	query_time	time.Time
-	query		*dns.Msg
-	answer_time	time.Time
-	answer		*dns.Msg
+	ip_family   byte
+	ip_protocol byte
+	addr        *net.IP
+	query_time  time.Time
+	query       *dns.Msg
+	answer_time time.Time
+	answer      *dns.Msg
 }
 
 func pad_right(s string, length int, pad string) string {
@@ -46,7 +46,7 @@ func (y ymmv_message) print() {
 		protocol_str = "TCP"
 	}
 	header := fmt.Sprintf("===[ ymmv message (IPv%d, %s, %s) ]",
-			      y.ip_family, protocol_str, y.addr)
+		y.ip_family, protocol_str, y.addr)
 	fmt.Printf("%s\n", pad_right(header, 78, "="))
 	fmt.Printf("%s\n", y.query)
 	if y.query_time.Unix() == 0 {
@@ -95,7 +95,7 @@ func read_next_message() (y *ymmv_message, err error) {
 		ip_family = 6
 	} else {
 		errmsg := fmt.Sprintf("Expecting '4' or '6' for IP family, got '%s'",
-				      ip_family)
+			ip_family)
 		return nil, errors.New(errmsg)
 	}
 
@@ -109,7 +109,7 @@ func read_next_message() (y *ymmv_message, err error) {
 	}
 	if (protocol[0] != 'u') && (protocol[0] != 't') {
 		errmsg := fmt.Sprintf("Expecting 't'cp or 'u'dp for protocol, got '%s'",
-				      protocol)
+			protocol)
 		return nil, errors.New(errmsg)
 	}
 
@@ -126,7 +126,7 @@ func read_next_message() (y *ymmv_message, err error) {
 	}
 	if nread != cap(tmp_addr) {
 		errmsg := fmt.Sprintf("Only read %d of %d bytes of address",
-				      nread, cap(tmp_addr))
+			nread, cap(tmp_addr))
 		return nil, errors.New(errmsg)
 	}
 	addr := net.IP(tmp_addr)
@@ -229,8 +229,8 @@ func lookup_yeti_servers() []net.IP {
 	}
 	ips := make([]net.IP, 0, 1)
 	for n := range ns_response.Answer {
-	        fmt.Printf("\rLooking up Yeti root servers [%d/%d]",
-			   n, len(ns_response.Answer))
+		fmt.Printf("\rLooking up Yeti root servers [%d/%d]",
+			n, len(ns_response.Answer))
 		answer, _, qname, _, err := resolver.Wait()
 		if err != nil {
 			fmt.Printf("\nError looking up %s: %s\n", qname, err)
@@ -245,19 +245,19 @@ func lookup_yeti_servers() []net.IP {
 			}
 		}
 	}
-        fmt.Printf("\rLooking up Yeti root servers [%d/%d]\n",
-		   len(ns_response.Answer), len(ns_response.Answer))
+	fmt.Printf("\rLooking up Yeti root servers [%d/%d]\n",
+		len(ns_response.Answer), len(ns_response.Answer))
 	resolver.Close()
 
 	return ips
 }
 
 type yeti_server_set struct {
-	algorithm string
-	ips []net.IP
-	rtt_msec []int
-//	rtt_times []time.Duration
-	next_server int
+	algorithm     string
+	ips           []net.IP
+	rtt_durations []time.Duration
+	rtt_times     []time.Time
+	next_server   int
 }
 
 func init_yeti_server_set(algorithm string, ips []net.IP) (srvs *yeti_server_set) {
@@ -269,7 +269,8 @@ func init_yeti_server_set(algorithm string, ips []net.IP) (srvs *yeti_server_set
 	} else {
 		srvs.ips = ips
 	}
-	srvs.rtt_msec = make([]int, len(srvs.ips), len(srvs.ips))
+	srvs.rtt_durations = make([]time.Duration, len(srvs.ips), len(srvs.ips))
+	srvs.rtt_times = make([]time.Time, len(srvs.ips), len(srvs.ips))
 	srvs.next_server = 0
 	return srvs
 }
@@ -291,14 +292,15 @@ func (srvs *yeti_server_set) next() (ips []net.IP) {
 func yeti_query(srvs *yeti_server_set, query *dns.Msg) (result *dns.Msg, err error) {
 	for _, ip := range srvs.next() {
 		server := "[" + ip.String() + "]:53"
-//		resp, qtime, err := dnsstub.DnsQuery(server, query)
-        	fmt.Printf("Sending query to %s...", server)
+		fmt.Printf("Sending query to %s...", server)
+		os.Stdout.Sync()
 		_, qtime, err := dnsstub.DnsQuery(server, query)
+		//		resp, qtime, err := dnsstub.DnsQuery(server, query)
 		if err != nil {
 			// XXX: fix error handling
 			fmt.Printf("Error querying Yeti root server; %s\n", err)
 		}
-        	fmt.Printf("done. (%s)\n", qtime)
+		fmt.Printf("done. (%s)\n", qtime)
 	}
 	return nil, nil
 }
@@ -312,11 +314,11 @@ func main() {
 			// TODO: allow host name here
 			if ip == nil {
 				log.Fatalf("Unrecognized IP address '%s'\n",
-					   server)
+					server)
 			}
 			if ip.To4() != nil {
 				log.Fatalf("IP address '%s' is not an IPv6 address\n",
-					   ip)
+					ip)
 			}
 			ips = append(ips, ip)
 		}
@@ -324,7 +326,7 @@ func main() {
 	servers := init_yeti_server_set("round-robin", ips)
 	servers.algorithm = "random"
 	for {
-		y , err := read_next_message()
+		y, err := read_next_message()
 		if (err != nil) && (err != io.EOF) {
 			log.Fatal(err)
 		}
@@ -334,4 +336,3 @@ func main() {
 		yeti_query(servers, y.query)
 	}
 }
-
