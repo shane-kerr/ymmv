@@ -1,27 +1,27 @@
 package main
 
 import (
-	"fmt"
 	"encoding/binary"
+	"fmt"
+	"github.com/miekg/dns"
+	"github.com/miekg/pcap"
 	"log"
 	"net"
 	"os"
 	"time"
-	"github.com/miekg/dns"
-	"github.com/miekg/pcap"
 )
 
 var (
 	// We store the configuration of our local resolver in a global
 	// variable for convenience.
-	resolv_conf	*dns.ClientConfig
+	resolv_conf *dns.ClientConfig
 
 	// Use a global debug flag.
-	debug		bool
+	debug bool
 )
 
 // If we were passed name server addresses, parse them with this function.
-func parse_root_server_addresses(addrs []string)(map[[4]byte]bool, map[[16]byte]bool) {
+func parse_root_server_addresses(addrs []string) (map[[4]byte]bool, map[[16]byte]bool) {
 	if debug {
 		fmt.Fprintf(os.Stderr, "parse_root_server_addresses()\n")
 		fmt.Fprintf(os.Stderr, "addrs:%s\n", addrs)
@@ -48,15 +48,15 @@ func parse_root_server_addresses(addrs []string)(map[[4]byte]bool, map[[16]byte]
 // We have a goroutine to act as a stub resolver, and use this
 // structure to send the question in and get the results out.
 type stub_resolve_info struct {
-	ownername	string
-	rtype		uint16
-	answer		*dns.Msg
+	ownername string
+	rtype     uint16
+	answer    *dns.Msg
 }
 
 // A goroutine which performs stub lookups from a queue, writing
 // the results to another queue.
 func stub_resolve(questions <-chan stub_resolve_info,
-                  results chan<- stub_resolve_info) {
+	results chan<- stub_resolve_info) {
 	// make a client for our lookups
 	dnsClient := new(dns.Client)
 	dnsClient.Net = "tcp"
@@ -72,7 +72,7 @@ func stub_resolve(questions <-chan stub_resolve_info,
 		// check each resolver in turn
 		for _, server := range resolv_conf.Servers {
 			resolver := server + ":53"
-			r , _, err := dnsClient.Exchange(query, resolver)
+			r, _, err := dnsClient.Exchange(query, resolver)
 			// if we got an answer, use that and stop trying
 			if (err == nil) && (r != nil) && (r.Rcode == dns.RcodeSuccess) {
 				result.answer = r
@@ -99,8 +99,8 @@ func lookup_root_server_addresses() (map[[4]byte]bool, map[[16]byte]bool) {
 	ns_query := new(dns.Msg)
 	ns_query.SetQuestion(".", dns.TypeNS)
 	// TODO: avoid hard-coding a particular root server here
-	ns_response , _, err := root_client.Exchange(ns_query,
-                                                     "k.root-servers.net:53")
+	ns_response, _, err := root_client.Exchange(ns_query,
+		"k.root-servers.net:53")
 	if err != nil {
 		log.Fatal("Error looking up root name servers")
 	}
@@ -115,7 +115,7 @@ func lookup_root_server_addresses() (map[[4]byte]bool, map[[16]byte]bool) {
 	// look up the addresses of the root servers
 	questions := make(chan stub_resolve_info, 16)
 	results := make(chan stub_resolve_info, len(root_servers)*2)
-	for i := 0; i<8; i++ {
+	for i := 0; i < 8; i++ {
 		go stub_resolve(questions, results)
 	}
 	for _, ns := range root_servers {
@@ -130,21 +130,27 @@ func lookup_root_server_addresses() (map[[4]byte]bool, map[[16]byte]bool) {
 	}
 	root_addresses4 := make(map[[4]byte]bool)
 	root_addresses6 := make(map[[16]byte]bool)
-	for i := 0; i<len(root_servers)*2; i++ {
+	for i := 0; i < len(root_servers)*2; i++ {
 		response := <-results
 		if response.answer == nil {
 			log.Fatalf("Error looking up root server %s",
-			           response.ownername)
+				response.ownername)
 		}
 		for _, root_address := range response.answer.Answer {
 			switch root_address.(type) {
 			case *dns.AAAA:
 				aaaa_s := root_address.(*dns.AAAA).AAAA.String()
+				if debug {
+					fmt.Fprintf(os.Stderr, "server: %s\n", aaaa_s)
+				}
 				var aaaa [16]byte
 				copy(aaaa[:], net.ParseIP(aaaa_s)[0:16])
 				root_addresses6[aaaa] = true
 			case *dns.A:
 				a_s := root_address.(*dns.A).A.String()
+				if debug {
+					fmt.Fprintf(os.Stderr, "server: %s\n", a_s)
+				}
 				var a [4]byte
 				copy(a[:], net.ParseIP(a_s).To4()[0:4])
 				root_addresses4[a] = true
@@ -156,7 +162,7 @@ func lookup_root_server_addresses() (map[[4]byte]bool, map[[16]byte]bool) {
 }
 
 func ymmv_write(ip_family int, addr []byte, query dns.Msg,
-		answer_time time.Time, answer dns.Msg) {
+	answer_time time.Time, answer dns.Msg) {
 	// output magic value
 	_, err := os.Stdout.Write([]byte("ymmv"))
 	if err != nil {
@@ -176,7 +182,7 @@ func ymmv_write(ip_family int, addr []byte, query dns.Msg,
 	}
 
 	// output (U)DP or (T)CP
-	_, err = os.Stdout.Write([]byte("u"))	// only support UDP for now...
+	_, err = os.Stdout.Write([]byte("u")) // only support UDP for now...
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -276,8 +282,8 @@ func parse_query(raw_answer []byte) (*dns.Msg, *dns.Msg, error) {
 // Look in the named file and find any packets that are from our root
 // servers on port 53.
 func pcap2ymmv(fname string,
-               root_addresses4 map[[4]byte]bool,
-               root_addresses6 map[[16]byte]bool) {
+	root_addresses4 map[[4]byte]bool,
+	root_addresses6 map[[16]byte]bool) {
 	// open our pcap file
 	var file *os.File
 	if fname == "-" {
@@ -301,6 +307,9 @@ func pcap2ymmv(fname string,
 			break
 		}
 		pkt.Decode()
+		if debug {
+			fmt.Fprintf(os.Stderr, "pcap2ymmv read packet\n")
+		}
 
 		// parse each header so we can see if we want this packet
 		ip_family := 0
@@ -312,20 +321,32 @@ func pcap2ymmv(fname string,
 				// check that the packet comes from one
 				// of the addresses that we are looking for
 				iphdr := hdr.(*pcap.Iphdr)
+				if debug {
+					fmt.Fprintf(os.Stderr, "pcap2ymmv source IP %s\n", net.IP(iphdr.SrcIp).String())
+				}
 				var addr [4]byte
 				copy(addr[:], iphdr.SrcIp[0:4])
-				_, found :=  root_addresses4[addr]
+				_, found := root_addresses4[addr]
 				if found {
+					if debug {
+						fmt.Fprintf(os.Stderr, "pcap2ymmv address match\n")
+					}
 					ip_family = 4
 					ip_addr = make([]byte, 4)
 					copy(ip_addr[:], addr[0:4])
 				}
 			case *pcap.Ip6hdr:
 				iphdr := hdr.(*pcap.Ip6hdr)
+				if debug {
+					fmt.Fprintf(os.Stderr, "pcap2ymmv source IP %s\n", net.IP(iphdr.SrcIp).String())
+				}
 				var addr [16]byte
 				copy(addr[:], iphdr.SrcIp[0:16])
-				_, found :=  root_addresses6[addr]
+				_, found := root_addresses6[addr]
 				if found {
+					if debug {
+						fmt.Fprintf(os.Stderr, "pcap2ymmv address match\n")
+					}
 					ip_family = 6
 					ip_addr = make([]byte, 16)
 					copy(ip_addr[:], addr[0:16])
@@ -340,13 +361,17 @@ func pcap2ymmv(fname string,
 
 		// if we got a valid IP and UDP packet, process it
 		if (ip_family != 0) && valid_udp {
+			if debug {
+				fmt.Fprintf(os.Stderr, "pcap2ymmv matched packet\n")
+			}
 			// parse the payload as the DNS message
 			query, answer, err := parse_query(pkt.Payload)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "error unpacking DNS message: %s\n", err)
 			} else {
 				ymmv_write(ip_family, ip_addr,
-					   *query, pkt.Time, *answer)
+					*query, pkt.Time, *answer)
+				os.Stdout.Sync()
 			}
 		}
 	}
@@ -362,7 +387,9 @@ func main() {
 	}
 
 	// initialize our stub resolver
-	var ( err error )
+	var (
+		err error
+	)
 	resolv_conf, err = dns.ClientConfigFromFile("/etc/resolv.conf")
 	if err != nil {
 		log.Fatal(err)
