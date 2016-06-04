@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 	"github.com/miekg/dns"
 )
@@ -80,7 +81,13 @@ func stub_resolve(servers []string, queries <-chan *query, answers chan<- *answe
 		a.rtype = q.rtype
 		a.answer = nil
 		for _, server := range servers {
-			resolver := server + ":53"
+			// look for ':' because that indicates an IPv6 address
+			var resolver string
+			if strings.ContainsRune(server, ':') {
+				resolver = "[" + server + "]:53"
+			} else {
+				resolver = server + ":53"
+			}
 			a.answer, a.rtt, a.err = DnsQuery(resolver, dns_query)
 			if a.answer != nil {
 				break
