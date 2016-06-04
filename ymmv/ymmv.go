@@ -317,7 +317,7 @@ func main() {
 					server)
 			}
 			if ip.To4() != nil {
-				log.Fatalf("IP address '%s' is not an IPv6 address\n",
+				log.Print("WARNING: IP address '%s' is not an IPv6 address\n",
 					ip)
 			}
 			ips = append(ips, ip)
@@ -334,5 +334,6 @@ func main() {
 			break
 		}
 		yeti_query(servers, y.query)
+		// TODO: look up Yeti root servers periodically (re-priming)
 	}
 }
