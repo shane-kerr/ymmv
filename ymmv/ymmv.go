@@ -11,6 +11,7 @@ import (
 	"math/rand"
 	"net"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -289,23 +290,145 @@ func (srvs *yeti_server_set) next() (ips []net.IP) {
 	return ips
 }
 
-func yeti_query(srvs *yeti_server_set, query *dns.Msg) (result *dns.Msg, err error) {
+func compare_rrset(iana []dns.RR, yeti []dns.RR) (iana_only []dns.RR, yeti_only []dns.RR) {
+	// We use nested loops, which not especially efficient, 
+	// but we only expect a small number of RR in an RRset.
+	iana_only = make([]dns.RR, 0, 0)
+	yeti_only = make([]dns.RR, len(yeti))
+	copy(yeti_only, yeti)
+	for _, iana_rr := range(iana) {
+		found := false
+		for n, yeti_rr := range(yeti_only) {
+			if iana_rr.String() == yeti_rr.String() {
+				yeti_only = append(yeti_only[:n], yeti_only[n+1:]...)
+				found = true
+				break
+			}
+		}
+		if !found {
+			iana_only = append(iana_only, iana_rr)
+		}
+	}
+	return iana_only, yeti_only
+}
+
+func compare_resp(iana *dns.Msg, yeti *dns.Msg) {
+	equivalent := true
+	if iana.Response != yeti.Response {
+		fmt.Printf("Response flag mismatch: IANA %s vs Yeti %s\n",
+			iana.Response, yeti.Response)
+		equivalent = false
+	}
+	if iana.Opcode != yeti.Opcode {
+		fmt.Printf("Opcode mismatch: IANA %s vs Yeti %s\n",
+			dns.OpcodeToString[iana.Opcode],
+			dns.OpcodeToString[yeti.Opcode])
+		equivalent = false
+	}
+	if iana.Authoritative != yeti.Authoritative {
+		fmt.Printf("Authoritative flag mismatch: IANA %s vs Yeti %s\n",
+			iana.Authoritative, yeti.Authoritative)
+		equivalent = false
+	}
+	// truncated... hmmm...
+	if iana.RecursionDesired != yeti.RecursionDesired {
+		fmt.Printf("Recursion desired flag mismatch: IANA %s vs Yeti %s\n",
+			iana.RecursionDesired, yeti.RecursionDesired)
+		equivalent = false
+	}
+	if iana.RecursionAvailable != yeti.RecursionAvailable {
+		fmt.Printf("Recursion available flag mismatch: IANA %s vs Yeti %s\n",
+			strconv.FormatBool(iana.RecursionAvailable),
+			strconv.FormatBool(yeti.RecursionAvailable))
+		equivalent = false
+	}
+	if iana.AuthenticatedData != yeti.AuthenticatedData {
+		fmt.Printf("Authenticated data flag mismatch: IANA %s vs Yeti %s\n",
+			iana.AuthenticatedData, yeti.AuthenticatedData)
+		equivalent = false
+	}
+	if iana.CheckingDisabled != yeti.CheckingDisabled {
+		fmt.Printf("Checking disabled flag mismatch: IANA %s vs Yeti %s\n",
+			iana.CheckingDisabled, yeti.CheckingDisabled)
+		equivalent = false
+	}
+	if iana.Rcode != yeti.Rcode {
+		fmt.Printf("Rcode mismatch: IANA %s vs Yeti %s\n",
+			dns.RcodeToString[iana.Rcode],
+			dns.RcodeToString[yeti.Rcode])
+		equivalent = false
+	}
+	if (len(iana.Question) != 1) || (len(yeti.Question) != 1) {
+		fmt.Printf("Bogus number of questions: IANA %d, Yeti %d\n",
+			len(iana.Question), len(yeti.Question))
+		equivalent = false
+	} else {
+		if iana.Question[0] != yeti.Question[0] {
+			fmt.Printf("Question mismatch: IANA %s vs Yeti %s\n",
+				iana.Question[0], yeti.Question[0])
+			equivalent = false
+		}
+	}
+	iana_only, yeti_only := compare_rrset(iana.Answer, yeti.Answer)
+	if (len(iana_only) > 0) || (len(yeti_only) > 0) {
+		equivalent = false
+		if len(iana_only) > 0 {
+			fmt.Print("Answer section, IANA only\n")
+			for _, rr := range(iana_only) {
+				fmt.Printf("%s\n", rr)
+			}
+		}
+		if len(yeti_only) > 0 {
+			fmt.Print("Answer section, Yeti only\n")
+			for _, rr := range(yeti_only) {
+				fmt.Printf("%s\n", rr)
+			}
+		}
+	}
+	iana_only, yeti_only = compare_rrset(iana.Ns, yeti.Ns)
+	if (len(iana_only) > 0) || (len(yeti_only) > 0) {
+		equivalent = false
+		if len(iana_only) > 0 {
+			fmt.Print("Authority section, IANA only\n")
+			for _, rr := range(iana_only) {
+				fmt.Printf("%s\n", rr)
+			}
+		}
+		if len(yeti_only) > 0 {
+			fmt.Print("Authority section, Yeti only\n")
+			for _, rr := range(yeti_only) {
+				fmt.Printf("%s\n", rr)
+			}
+		}
+	}
+	if equivalent {
+//		fmt.Print("Equivalent. Yay!\n")
+	} else {
+//		fmt.Printf("---[ IANA ]----\n%s\n---[ Yeti ]----\n%s\n",
+//			iana, yeti)
+//		os.Exit(0)
+	}
+}
+
+func yeti_query(srvs *yeti_server_set, iana_query *dns.Msg, iana_resp *dns.Msg) {
+	// TODO: perform in background
 	for _, ip := range srvs.next() {
 		server := "[" + ip.String() + "]:53"
 		fmt.Printf("Sending query to %s...", server)
 		os.Stdout.Sync()
-		_, qtime, err := dnsstub.DnsQuery(server, query)
-		//		resp, qtime, err := dnsstub.DnsQuery(server, query)
+		yeti_resp, qtime, err := dnsstub.DnsQuery(server, iana_query)
+		fmt.Printf("done. (%s)\n", qtime)
 		if err != nil {
 			// XXX: fix error handling
 			fmt.Printf("Error querying Yeti root server; %s\n", err)
+		} else {
+			compare_resp(iana_resp, yeti_resp)
 		}
-		fmt.Printf("done. (%s)\n", qtime)
 	}
-	return nil, nil
 }
 
 // Main function.
+// TODO: verbose/debug flags
 func main() {
 	ips := make([]net.IP, 0, 0)
 	if len(os.Args) > 1 {
@@ -317,7 +440,7 @@ func main() {
 					server)
 			}
 			if ip.To4() != nil {
-				log.Print("WARNING: IP address '%s' is not an IPv6 address\n",
+				log.Printf("WARNING: IP address '%s' is not an IPv6 address\n",
 					ip)
 			}
 			ips = append(ips, ip)
@@ -333,7 +456,7 @@ func main() {
 		if y == nil {
 			break
 		}
-		yeti_query(servers, y.query)
+		yeti_query(servers, y.query, y.answer)
 		// TODO: look up Yeti root servers periodically (re-priming)
 	}
 }
