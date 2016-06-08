@@ -11,6 +11,8 @@ import (
 	"math/rand"
 	"net"
 	"os"
+	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -293,8 +295,8 @@ func (srvs *yeti_server_set) next() (ips []net.IP) {
 }
 
 type yeti_server_generator struct {
-	servers  *yeti_server_set
-	ips      chan []net.IP
+	servers *yeti_server_set
+	ips     chan []net.IP
 }
 
 func init_yeti_server_generator(algorithm string, ips []net.IP) (gen *yeti_server_generator) {
@@ -315,8 +317,9 @@ func (gen *yeti_server_generator) next() (ips []net.IP) {
 
 // RrSort implements functions needed to sort []dns.RR
 type rr_sort []dns.RR
-func (a rr_sort) Len() int            { return len(a) }
-func (a rr_sort) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+
+func (a rr_sort) Len() int      { return len(a) }
+func (a rr_sort) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
 func (a rr_sort) Less(i, j int) bool {
 	// XXX: is there a "cmp" equivalent in Go?
 	// compare name of RR
@@ -348,7 +351,7 @@ func (a rr_sort) Less(i, j int) bool {
 	// a way to easily access that directly, so we will use the string
 	// representation.
 	case_insensitive := false
-	switch (a[i].Header().Rrtype) {
+	switch a[i].Header().Rrtype {
 	case dns.TypeNS:
 		case_insensitive = true
 	case dns.TypeCNAME:
@@ -370,10 +373,10 @@ func (a rr_sort) Less(i, j int) bool {
 		case_insensitive = true
 	}
 	i_str := a[i].String()
-	j_str := a[i].String()
+	j_str := a[j].String()
 	if case_insensitive {
 		i_str = strings.ToLower(a[i].String())
-		j_str = strings.ToLower(a[i].String())
+		j_str = strings.ToLower(a[j].String())
 	}
 	if i_str < j_str {
 		return true
@@ -381,10 +384,10 @@ func (a rr_sort) Less(i, j int) bool {
 	return false
 }
 
-func extract_rrset(rrs []dns.RR) {
+func extract_rrset(rrs []dns.RR) map[string][]dns.RR {
 	rrsets := make(map[string][]dns.RR)
-	for _, rr := range(rrs) {
-		key := strings.ToLower(rr.Header().Name)
+	for _, rr := range rrs {
+		key := fmt.Sprintf("%06d_", rr.Header().Rrtype) + strings.ToLower(rr.Header().Name)
 		rrset, ok := rrsets[key]
 		if !ok {
 			rrset = make([]dns.RR, 0)
@@ -392,17 +395,53 @@ func extract_rrset(rrs []dns.RR) {
 		rrset = append(rrset, rr)
 		rrsets[key] = rrset
 	}
+	for _, rrset := range rrsets {
+		sort.Sort(rr_sort(rrset))
+	}
+	return rrsets
+}
+
+/*
+   Additional section comparison is more difficult than answer or
+   authority section comparison.
+
+   What we need to do is pull out all of the RRset in both the IANA
+   and Yeti messages. Any RRset that is in *both* messages must be the
+   same, otherwise we ignore it.
+
+   Also, we don't really care about the contents of the OPT pseudo-RR,
+   as that doesn't contain actual answer data.
+*/
+func compare_additional(iana []dns.RR, yeti []dns.RR) (iana_only []dns.RR, yeti_only []dns.RR) {
+	iana_only = make([]dns.RR, 0)
+	yeti_only = make([]dns.RR, 0)
+	iana_rr_map := extract_rrset(iana)
+	yeti_rr_map := extract_rrset(yeti)
+	for key, iana_rrset := range iana_rr_map {
+		yeti_rrset, ok := yeti_rr_map[key]
+		if ok {
+			if !reflect.DeepEqual(iana_rrset, yeti_rrset) {
+				for _, rr := range iana_rrset {
+					iana_only = append(iana_only, rr)
+				}
+				for _, rr := range yeti_rrset {
+					yeti_only = append(yeti_only, rr)
+				}
+			}
+		}
+	}
+	return iana_only, yeti_only
 }
 
 func compare_section(iana []dns.RR, yeti []dns.RR) (iana_only []dns.RR, yeti_only []dns.RR) {
-	// We use nested loops, which not especially efficient, 
+	// We use nested loops, which not especially efficient,
 	// but we only expect a small number of RR in a section
-	iana_only = make([]dns.RR, 0, 0)
+	iana_only = make([]dns.RR, 0)
 	yeti_only = make([]dns.RR, len(yeti))
 	copy(yeti_only, yeti)
-	for _, iana_rr := range(iana) {
+	for _, iana_rr := range iana {
 		found := false
-		for n, yeti_rr := range(yeti_only) {
+		for n, yeti_rr := range yeti_only {
 			if strings.ToLower(iana_rr.String()) == strings.ToLower(yeti_rr.String()) {
 				yeti_only = append(yeti_only[:n], yeti_only[n+1:]...)
 				found = true
@@ -474,44 +513,66 @@ func compare_resp(iana *dns.Msg, yeti *dns.Msg) (result string) {
 			equivalent = false
 		}
 	}
+	sort.Sort(rr_sort(iana.Answer))
+	sort.Sort(rr_sort(yeti.Answer))
 	iana_only, yeti_only := compare_section(iana.Answer, yeti.Answer)
 	if (len(iana_only) > 0) || (len(yeti_only) > 0) {
 		equivalent = false
 		if len(iana_only) > 0 {
 			result += fmt.Sprint("Answer section, IANA only\n")
-			for _, rr := range(iana_only) {
+			for _, rr := range iana_only {
 				result += fmt.Sprintf("%s\n", rr)
 			}
 		}
 		if len(yeti_only) > 0 {
 			result += fmt.Sprint("Answer section, Yeti only\n")
-			for _, rr := range(yeti_only) {
+			for _, rr := range yeti_only {
 				result += fmt.Sprintf("%s\n", rr)
 			}
 		}
 	}
+	sort.Sort(rr_sort(iana.Ns))
+	sort.Sort(rr_sort(yeti.Ns))
 	iana_only, yeti_only = compare_section(iana.Ns, yeti.Ns)
 	if (len(iana_only) > 0) || (len(yeti_only) > 0) {
 		equivalent = false
 		if len(iana_only) > 0 {
 			result += fmt.Sprint("Authority section, IANA only\n")
-			for _, rr := range(iana_only) {
+			for _, rr := range iana_only {
 				result += fmt.Sprintf("%s\n", rr)
 			}
 		}
 		if len(yeti_only) > 0 {
 			result += fmt.Sprint("Authority section, Yeti only\n")
-			for _, rr := range(yeti_only) {
+			for _, rr := range yeti_only {
 				result += fmt.Sprintf("%s\n", rr)
 			}
 		}
 	}
+	sort.Sort(rr_sort(iana.Extra))
+	sort.Sort(rr_sort(yeti.Extra))
+	iana_only, yeti_only = compare_additional(iana.Extra, yeti.Extra)
+	if (len(iana_only) > 0) || (len(yeti_only) > 0) {
+		equivalent = false
+		if len(iana_only) > 0 {
+			result += fmt.Sprint("Additional section, IANA mismatch\n")
+			for _, rr := range iana_only {
+				result += fmt.Sprintf("%s\n", rr)
+			}
+		}
+		if len(yeti_only) > 0 {
+			result += fmt.Sprint("Additional section, Yeti mismatch\n")
+			for _, rr := range yeti_only {
+				result += fmt.Sprintf("%s\n", rr)
+			}
+		}
+	}
+
 	if equivalent {
-//		result += fmt.Print("Equivalent. Yay!\n")
+		//		result += fmt.Print("Equivalent. Yay!\n")
 	} else {
-//		result += fmt.Printf("---[ IANA ]----\n%s\n---[ Yeti ]----\n%s\n",
-//			iana, yeti)
-//		os.Exit(0)
+		//		result += fmt.Sprintf("---[ IANA ]----\n%s\n---[ Yeti ]----\n%s\n",
+		//			iana, yeti)
 	}
 	return result
 }
@@ -520,8 +581,11 @@ func yeti_query(gen *yeti_server_generator, iana_query *dns.Msg, iana_resp *dns.
 	result := ""
 	for _, ip := range gen.next() {
 		server := "[" + ip.String() + "]:53"
-		result += fmt.Sprintf("Sending query to %s\n", server)
-//		yeti_resp, qtime, err := dnsstub.DnsQuery(server, iana_query)
+		result += fmt.Sprintf("Sending query '%s' %s to %s\n",
+			iana_query.Question[0].Name,
+			dns.TypeToString[iana_query.Question[0].Qtype],
+			server)
+		//		yeti_resp, qtime, err := dnsstub.DnsQuery(server, iana_query)
 		yeti_resp, _, err := dnsstub.DnsQuery(server, iana_query)
 		if err != nil {
 			result += fmt.Sprintf("Error querying Yeti root server; %s\n", err)
@@ -564,12 +628,12 @@ func main() {
 		for {
 			had_output := false
 			select {
-				case str := <-query_output:
-					query_count -= 1
-					had_output = true
-					fmt.Print(str)
-				default:
-					// do nothing, needed for non-blocking
+			case str := <-query_output:
+				query_count -= 1
+				had_output = true
+				fmt.Print(str)
+			default:
+				// do nothing, needed for non-blocking
 			}
 			if !had_output {
 				break
