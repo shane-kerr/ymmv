@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -270,6 +271,7 @@ func init_yeti_server_set(algorithm string, ips []net.IP) (srvs *yeti_server_set
 	} else {
 		srvs.ips = ips
 	}
+	// TODO: sort ips
 	srvs.rtt_durations = make([]time.Duration, len(srvs.ips), len(srvs.ips))
 	srvs.rtt_times = make([]time.Time, len(srvs.ips), len(srvs.ips))
 	srvs.next_server = 0
@@ -290,16 +292,118 @@ func (srvs *yeti_server_set) next() (ips []net.IP) {
 	return ips
 }
 
-func compare_rrset(iana []dns.RR, yeti []dns.RR) (iana_only []dns.RR, yeti_only []dns.RR) {
+type yeti_server_generator struct {
+	servers  *yeti_server_set
+	ips      chan []net.IP
+}
+
+func init_yeti_server_generator(algorithm string, ips []net.IP) (gen *yeti_server_generator) {
+	gen = new(yeti_server_generator)
+	gen.servers = init_yeti_server_set(algorithm, ips)
+	gen.ips = make(chan []net.IP)
+	go func() {
+		for {
+			gen.ips <- gen.servers.next()
+		}
+	}()
+	return gen
+}
+
+func (gen *yeti_server_generator) next() (ips []net.IP) {
+	return <-gen.ips
+}
+
+// RrSort implements functions needed to sort []dns.RR
+type rr_sort []dns.RR
+func (a rr_sort) Len() int            { return len(a) }
+func (a rr_sort) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a rr_sort) Less(i, j int) bool {
+	// XXX: is there a "cmp" equivalent in Go?
+	// compare name of RR
+	i_name := strings.ToLower(a[i].Header().Name)
+	j_name := strings.ToLower(a[i].Header().Name)
+	if i_name < j_name {
+		return true
+	} else if i_name > j_name {
+		return false
+	}
+
+	// compare type of RR
+	if a[i].Header().Rrtype < a[j].Header().Rrtype {
+		return true
+	} else if a[i].Header().Rrtype > a[j].Header().Rrtype {
+		return false
+	}
+
+	// do not worry about class
+
+	// compare TTL of RR
+	if a[i].Header().Ttl < a[j].Header().Ttl {
+		return true
+	} else if a[i].Header().Ttl > a[j].Header().Ttl {
+		return false
+	}
+
+	// We want to compare the RDATA, but there does not appear to be
+	// a way to easily access that directly, so we will use the string
+	// representation.
+	case_insensitive := false
+	switch (a[i].Header().Rrtype) {
+	case dns.TypeNS:
+		case_insensitive = true
+	case dns.TypeCNAME:
+		case_insensitive = true
+	case dns.TypeSOA:
+		// possibly not strictly correct, as the mname field might be
+		// case-sensitive, but...
+		case_insensitive = true
+	case dns.TypePTR:
+		case_insensitive = true
+	case dns.TypeMX:
+		case_insensitive = true
+	// TODO: double-check the following
+	case dns.TypeSRV:
+		case_insensitive = true
+	case dns.TypeNAPTR:
+		case_insensitive = true
+	case dns.TypeDNAME:
+		case_insensitive = true
+	}
+	i_str := a[i].String()
+	j_str := a[i].String()
+	if case_insensitive {
+		i_str = strings.ToLower(a[i].String())
+		j_str = strings.ToLower(a[i].String())
+	}
+	if i_str < j_str {
+		return true
+	}
+	return false
+}
+
+func extract_rrset(rrs []dns.RR) {
+	rrsets := make(map[string][]dns.RR)
+	for _, rr := range(rrs) {
+		key := strings.ToLower(rr.Header().Name)
+		rrset, ok := rrsets[key]
+		if !ok {
+			rrset = make([]dns.RR, 0)
+		}
+		rrset = append(rrset, rr)
+		rrsets[key] = rrset
+	}
+}
+
+func compare_section(iana []dns.RR, yeti []dns.RR) (iana_only []dns.RR, yeti_only []dns.RR) {
 	// We use nested loops, which not especially efficient, 
-	// but we only expect a small number of RR in an RRset.
+	// but we only expect a small number of RR in a section
 	iana_only = make([]dns.RR, 0, 0)
 	yeti_only = make([]dns.RR, len(yeti))
 	copy(yeti_only, yeti)
 	for _, iana_rr := range(iana) {
 		found := false
 		for n, yeti_rr := range(yeti_only) {
-			if iana_rr.String() == yeti_rr.String() {
+			if strings.ToLower(iana_rr.String()) == strings.ToLower(yeti_rr.String()) {
 				yeti_only = append(yeti_only[:n], yeti_only[n+1:]...)
 				found = true
 				break
@@ -312,119 +416,120 @@ func compare_rrset(iana []dns.RR, yeti []dns.RR) (iana_only []dns.RR, yeti_only 
 	return iana_only, yeti_only
 }
 
-func compare_resp(iana *dns.Msg, yeti *dns.Msg) {
+func compare_resp(iana *dns.Msg, yeti *dns.Msg) (result string) {
+	result = ""
 	equivalent := true
 	if iana.Response != yeti.Response {
-		fmt.Printf("Response flag mismatch: IANA %s vs Yeti %s\n",
+		result += fmt.Sprintf("Response flag mismatch: IANA %s vs Yeti %s\n",
 			iana.Response, yeti.Response)
 		equivalent = false
 	}
 	if iana.Opcode != yeti.Opcode {
-		fmt.Printf("Opcode mismatch: IANA %s vs Yeti %s\n",
+		result += fmt.Sprintf("Opcode mismatch: IANA %s vs Yeti %s\n",
 			dns.OpcodeToString[iana.Opcode],
 			dns.OpcodeToString[yeti.Opcode])
 		equivalent = false
 	}
 	if iana.Authoritative != yeti.Authoritative {
-		fmt.Printf("Authoritative flag mismatch: IANA %s vs Yeti %s\n",
+		result += fmt.Sprintf("Authoritative flag mismatch: IANA %s vs Yeti %s\n",
 			iana.Authoritative, yeti.Authoritative)
 		equivalent = false
 	}
 	// truncated... hmmm...
 	if iana.RecursionDesired != yeti.RecursionDesired {
-		fmt.Printf("Recursion desired flag mismatch: IANA %s vs Yeti %s\n",
+		result += fmt.Sprintf("Recursion desired flag mismatch: IANA %s vs Yeti %s\n",
 			iana.RecursionDesired, yeti.RecursionDesired)
 		equivalent = false
 	}
 	if iana.RecursionAvailable != yeti.RecursionAvailable {
-		fmt.Printf("Recursion available flag mismatch: IANA %s vs Yeti %s\n",
+		result += fmt.Sprintf("Recursion available flag mismatch: IANA %s vs Yeti %s\n",
 			strconv.FormatBool(iana.RecursionAvailable),
 			strconv.FormatBool(yeti.RecursionAvailable))
 		equivalent = false
 	}
 	if iana.AuthenticatedData != yeti.AuthenticatedData {
-		fmt.Printf("Authenticated data flag mismatch: IANA %s vs Yeti %s\n",
+		result += fmt.Sprintf("Authenticated data flag mismatch: IANA %s vs Yeti %s\n",
 			iana.AuthenticatedData, yeti.AuthenticatedData)
 		equivalent = false
 	}
 	if iana.CheckingDisabled != yeti.CheckingDisabled {
-		fmt.Printf("Checking disabled flag mismatch: IANA %s vs Yeti %s\n",
+		result += fmt.Sprintf("Checking disabled flag mismatch: IANA %s vs Yeti %s\n",
 			iana.CheckingDisabled, yeti.CheckingDisabled)
 		equivalent = false
 	}
 	if iana.Rcode != yeti.Rcode {
-		fmt.Printf("Rcode mismatch: IANA %s vs Yeti %s\n",
+		result += fmt.Sprintf("Rcode mismatch: IANA %s vs Yeti %s\n",
 			dns.RcodeToString[iana.Rcode],
 			dns.RcodeToString[yeti.Rcode])
 		equivalent = false
 	}
 	if (len(iana.Question) != 1) || (len(yeti.Question) != 1) {
-		fmt.Printf("Bogus number of questions: IANA %d, Yeti %d\n",
+		result += fmt.Sprintf("Bogus number of questions: IANA %d, Yeti %d\n",
 			len(iana.Question), len(yeti.Question))
 		equivalent = false
 	} else {
 		if iana.Question[0] != yeti.Question[0] {
-			fmt.Printf("Question mismatch: IANA %s vs Yeti %s\n",
+			result += fmt.Sprintf("Question mismatch: IANA %s vs Yeti %s\n",
 				iana.Question[0], yeti.Question[0])
 			equivalent = false
 		}
 	}
-	iana_only, yeti_only := compare_rrset(iana.Answer, yeti.Answer)
+	iana_only, yeti_only := compare_section(iana.Answer, yeti.Answer)
 	if (len(iana_only) > 0) || (len(yeti_only) > 0) {
 		equivalent = false
 		if len(iana_only) > 0 {
-			fmt.Print("Answer section, IANA only\n")
+			result += fmt.Sprint("Answer section, IANA only\n")
 			for _, rr := range(iana_only) {
-				fmt.Printf("%s\n", rr)
+				result += fmt.Sprintf("%s\n", rr)
 			}
 		}
 		if len(yeti_only) > 0 {
-			fmt.Print("Answer section, Yeti only\n")
+			result += fmt.Sprint("Answer section, Yeti only\n")
 			for _, rr := range(yeti_only) {
-				fmt.Printf("%s\n", rr)
+				result += fmt.Sprintf("%s\n", rr)
 			}
 		}
 	}
-	iana_only, yeti_only = compare_rrset(iana.Ns, yeti.Ns)
+	iana_only, yeti_only = compare_section(iana.Ns, yeti.Ns)
 	if (len(iana_only) > 0) || (len(yeti_only) > 0) {
 		equivalent = false
 		if len(iana_only) > 0 {
-			fmt.Print("Authority section, IANA only\n")
+			result += fmt.Sprint("Authority section, IANA only\n")
 			for _, rr := range(iana_only) {
-				fmt.Printf("%s\n", rr)
+				result += fmt.Sprintf("%s\n", rr)
 			}
 		}
 		if len(yeti_only) > 0 {
-			fmt.Print("Authority section, Yeti only\n")
+			result += fmt.Sprint("Authority section, Yeti only\n")
 			for _, rr := range(yeti_only) {
-				fmt.Printf("%s\n", rr)
+				result += fmt.Sprintf("%s\n", rr)
 			}
 		}
 	}
 	if equivalent {
-//		fmt.Print("Equivalent. Yay!\n")
+//		result += fmt.Print("Equivalent. Yay!\n")
 	} else {
-//		fmt.Printf("---[ IANA ]----\n%s\n---[ Yeti ]----\n%s\n",
+//		result += fmt.Printf("---[ IANA ]----\n%s\n---[ Yeti ]----\n%s\n",
 //			iana, yeti)
 //		os.Exit(0)
 	}
+	return result
 }
 
-func yeti_query(srvs *yeti_server_set, iana_query *dns.Msg, iana_resp *dns.Msg) {
-	// TODO: perform in background
-	for _, ip := range srvs.next() {
+func yeti_query(gen *yeti_server_generator, iana_query *dns.Msg, iana_resp *dns.Msg, output chan string) {
+	result := ""
+	for _, ip := range gen.next() {
 		server := "[" + ip.String() + "]:53"
-		fmt.Printf("Sending query to %s...", server)
-		os.Stdout.Sync()
-		yeti_resp, qtime, err := dnsstub.DnsQuery(server, iana_query)
-		fmt.Printf("done. (%s)\n", qtime)
+		result += fmt.Sprintf("Sending query to %s\n", server)
+//		yeti_resp, qtime, err := dnsstub.DnsQuery(server, iana_query)
+		yeti_resp, _, err := dnsstub.DnsQuery(server, iana_query)
 		if err != nil {
-			// XXX: fix error handling
-			fmt.Printf("Error querying Yeti root server; %s\n", err)
+			result += fmt.Sprintf("Error querying Yeti root server; %s\n", err)
 		} else {
-			compare_resp(iana_resp, yeti_resp)
+			result += compare_resp(iana_resp, yeti_resp)
 		}
 	}
+	output <- result
 }
 
 // Main function.
@@ -439,15 +544,12 @@ func main() {
 				log.Fatalf("Unrecognized IP address '%s'\n",
 					server)
 			}
-			if ip.To4() != nil {
-				log.Printf("WARNING: IP address '%s' is not an IPv6 address\n",
-					ip)
-			}
 			ips = append(ips, ip)
 		}
 	}
-	servers := init_yeti_server_set("round-robin", ips)
-	servers.algorithm = "random"
+	servers := init_yeti_server_generator("round-robin", ips)
+	query_output := make(chan string)
+	query_count := 0
 	for {
 		y, err := read_next_message()
 		if (err != nil) && (err != io.EOF) {
@@ -456,7 +558,29 @@ func main() {
 		if y == nil {
 			break
 		}
-		yeti_query(servers, y.query, y.answer)
+		go yeti_query(servers, y.query, y.answer, query_output)
+		query_count += 1
+
+		for {
+			had_output := false
+			select {
+				case str := <-query_output:
+					query_count -= 1
+					had_output = true
+					fmt.Print(str)
+				default:
+					// do nothing, needed for non-blocking
+			}
+			if !had_output {
+				break
+			}
+		}
+
 		// TODO: look up Yeti root servers periodically (re-priming)
+	}
+
+	for query_count > 0 {
+		fmt.Print(<-query_output)
+		query_count -= 1
 	}
 }
