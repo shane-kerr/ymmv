@@ -418,6 +418,10 @@ func compare_additional(iana []dns.RR, yeti []dns.RR) (iana_only []dns.RR, yeti_
 	iana_rr_map := extract_rrset(iana)
 	yeti_rr_map := extract_rrset(yeti)
 	for key, iana_rrset := range iana_rr_map {
+		// don't compare the OPT pseudo-RR
+		if iana_rrset[0].Header().Rrtype == dns.TypeOPT {
+			continue
+		}
 		yeti_rrset, ok := yeti_rr_map[key]
 		if ok {
 			if !reflect.DeepEqual(iana_rrset, yeti_rrset) {
