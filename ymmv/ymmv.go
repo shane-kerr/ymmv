@@ -600,9 +600,23 @@ func yeti_query(gen *yeti_server_generator, iana_query *dns.Msg, iana_resp *dns.
 	output <- result
 }
 
+func message_reader(output chan *ymmv_message) {
+	for {
+		y, err := read_next_message()
+		if (err != nil) && (err != io.EOF) {
+			log.Fatal(err)
+		}
+		output <- y
+		if y == nil {
+			break
+		}
+	}
+}
+
 // Main function.
 // TODO: verbose/debug flags
 func main() {
+	// parse any target IP specified on startup
 	ips := make([]net.IP, 0, 0)
 	if len(os.Args) > 1 {
 		for _, server := range os.Args[1:] {
@@ -615,38 +629,40 @@ func main() {
 			ips = append(ips, ip)
 		}
 	}
-	servers := init_yeti_server_generator("round-robin", ips)
-	query_output := make(chan string)
-	query_count := 0
-	for {
-		y, err := read_next_message()
-		if (err != nil) && (err != io.EOF) {
-			log.Fatal(err)
-		}
-		if y == nil {
-			break
-		}
-		go yeti_query(servers, y.query, y.answer, query_output)
-		query_count += 1
 
-		for {
-			had_output := false
-			select {
-			case str := <-query_output:
-				query_count -= 1
-				had_output = true
-				fmt.Print(str)
-			default:
-				// do nothing, needed for non-blocking
-			}
-			if !had_output {
+	// start a goroutine to read our input
+	messages := make(chan *ymmv_message)
+	go message_reader(messages)
+
+	// start a goroutine to generate root server targets
+	servers := init_yeti_server_generator("round-robin", ips)
+
+	// make a channel to get our comparison results
+	query_output := make(chan string)
+
+	// keep track of number of outstanding queries
+	query_count := 0
+
+	// main loop, gets answers to compare and collects the results
+	for {
+		select {
+		// new answer to compare
+		case y := <-messages:
+			if y == nil {
 				break
 			}
+			go yeti_query(servers, y.query, y.answer, query_output)
+			query_count += 1
+		// comparison done
+		case str := <-query_output:
+			fmt.Print(str)
+			query_count -= 1
 		}
 
 		// TODO: look up Yeti root servers periodically (re-priming)
 	}
 
+	// wait for any outstanding queries to finish before exiting
 	for query_count > 0 {
 		fmt.Print(<-query_output)
 		query_count -= 1
