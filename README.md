@@ -15,13 +15,13 @@ be found in
 [ymmv-format.md](https://github.com/shane-kerr/ymmv/blob/master/ymmv-format.md).
 
 For each query and answer that the resolver has made to the IANA root
-servers, a version will be sent to the some Yeti root servers.
-Initially the particular Yeti server will be round-robin from a list
-of servers (or the whole set if none is specified), but later we will
-add RTT-based server selection.
+servers, a version is be sent to the some Yeti root servers. Initially
+the particular Yeti server is be round-robin from a list of servers
+(or all Yeti servers if none is specified), but later we will add
+random, all, and RTT-based server selection.
 
-The Yeti answer that is returned will be compared to the IANA answer,
-and if there is a difference this will be logged. Administrators will
+The Yeti answer that is returned is compared to the IANA answer, and
+if there is a difference this is logged. Later, administrators will
 have to ability to opt-in to having their logs periodically e-mailed
 to the Yeti project.
 
@@ -54,7 +54,7 @@ To build the `ymmv` program itself:
 Running
 =======
 
-The simplest way is with the "compare.sh" script. This requires
+The simplest way is with the `compare.sh` script. This requires
 `tcpdump` on the system (although this can be changed easily to
 `tshark` if preferred). A sample invocation looks like this:
 
