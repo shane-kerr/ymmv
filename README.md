@@ -50,29 +50,70 @@ To build the `ymmv` program itself:
     $ cd ymmv
     $ go build
 
+
 Running
 =======
-A shell script which writes `tcpdump` output to a file is in the
-`pcap2ymmv` directory, and can be used like this:
 
-    $ sudo sh capture.sh eth0
+The simplest way is with the "compare.sh" script. This requires
+`tcpdump` on the system (although this can be changed easily to
+`tshark` if preferred). A sample invocation looks like this:
 
-For now this will create `ymmv.dat`, although the expectation is that
-this will be able to be used as input for the `ymmv` program later,
-like this:
+    $ sudo sh scripts/compare.sh eth0
 
-    $ sudo sh capture.sh eth0 | ymmv --mail-logs
+This will compare all answers from the IANA root servers with answers
+to the same queries from the Yeti root servers. Differences are
+displayed on the terminal.
+
+
+Customization
+=============
+You can specify only a specific set of Yeti root servers by passing
+them on the command line. For example, to replay queries and send them
+only to the TISF server you could use:
+
+    $ ymmv 2001:559:8000::6 < file.ymmv
+
+You can use an set of servers. For example, to compare with the IANA A
+and J servers, you could use:
+
+    $ ymmv 198.41.0.4 2001:503:ba3e::2:30 192.58.128.30 2001:503:c27::2:30
+
+Likewise, if you are using the `pcap2ymmv` program, you can specify
+which servers to mirror traffic from by specifying them on the command
+line. So if you only wanted the IANA F root server answers, you could
+use:
+
+    $ pcap2ymmv 192.5.5.241 2001:500:2f::f < infile.pcap > outfile.ymmv
+
+The easiest approach is probably to update the `compare.sh` script to
+suit your needs. It is fairly short and hopefully easy to modify.
 
 
 Limitations
 ===========
-There are lots of limitations right now, being worked on:
+There are several limitations right now, being worked on:
 
-* The ymmv program itself is still being developed. It does not work.
 * IP fragments are not handled by the pcap parser.
 * TCP streams are not reassembled by the pcap parser.
 
-We are currently working on finishing the ymmv program and
-reassembling IP fragments. We will log TCP to see if it is actually
-used much, and if so we will try to build a solution for that.
+We are currently working on a separate program which will perform IP
+fragment reassembly and extract DNS queries and answers from TCP
+streams.
 
+* No SRTT algorithm for selecting Yeti root servers to query yet
+  exists. This would be helpful for making the program look more like
+  a real recursive resolver.
+
+* The Yeti servers are only looked up on start. Periodic priming will
+  be added.
+
+* The program sends the same queries to the Yeti root servers that go
+  to the IANA root servers. We are working on a change to allow QNAME
+  minimization on Yeti queries, which will remove personally
+  identifiable information and make the tool even more widely useful.
+
+* No easy way exists to report differences found back to the Yeti
+  operators. This will be added as an opt-in "--email-to" command-line
+  option.
+
+* Missing verbose flags to help debugging.
