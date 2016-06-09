@@ -23,8 +23,8 @@ var (
 // If we were passed name server addresses, parse them with this function.
 func parse_root_server_addresses(addrs []string) (map[[4]byte]bool, map[[16]byte]bool) {
 	if debug {
-		fmt.Fprintf(os.Stderr, "parse_root_server_addresses()\n")
-		fmt.Fprintf(os.Stderr, "addrs:%s\n", addrs)
+		fmt.Fprintf(os.Stderr, "pcap2ymmv parse_root_server_addresses()\n")
+		fmt.Fprintf(os.Stderr, "pcap2ymmv addrs:%s\n", addrs)
 	}
 	root_addresses4 := make(map[[4]byte]bool)
 	root_addresses6 := make(map[[16]byte]bool)
@@ -100,7 +100,7 @@ func lookup_root_server_addresses() (map[[4]byte]bool, map[[16]byte]bool) {
 	ns_query.SetQuestion(".", dns.TypeNS)
 	// TODO: avoid hard-coding a particular root server here
 	ns_response, _, err := root_client.Exchange(ns_query,
-		"k.root-servers.net:53")
+		"f.root-servers.net:53")
 	if err != nil {
 		log.Fatal("Error looking up root name servers")
 	}
@@ -141,7 +141,7 @@ func lookup_root_server_addresses() (map[[4]byte]bool, map[[16]byte]bool) {
 			case *dns.AAAA:
 				aaaa_s := root_address.(*dns.AAAA).AAAA.String()
 				if debug {
-					fmt.Fprintf(os.Stderr, "server: %s\n", aaaa_s)
+					fmt.Fprintf(os.Stderr, "pcap2ymmv IANA server: %s\n", aaaa_s)
 				}
 				var aaaa [16]byte
 				copy(aaaa[:], net.ParseIP(aaaa_s)[0:16])
@@ -149,7 +149,7 @@ func lookup_root_server_addresses() (map[[4]byte]bool, map[[16]byte]bool) {
 			case *dns.A:
 				a_s := root_address.(*dns.A).A.String()
 				if debug {
-					fmt.Fprintf(os.Stderr, "server: %s\n", a_s)
+					fmt.Fprintf(os.Stderr, "pcap2ymmv IANA server: %s\n", a_s)
 				}
 				var a [4]byte
 				copy(a[:], net.ParseIP(a_s).To4()[0:4])
@@ -241,8 +241,11 @@ func ymmv_write(ip_family int, addr []byte, query dns.Msg,
 	if err != nil {
 		log.Fatal(err)
 	}
+	os.Stdout.Sync()
 
-	// XXX: do we need to flush?
+	if debug {
+		fmt.Fprintf(os.Stderr, "pcap2ymmv wrote ymmv record of %d bytes\n", len(answer_bytes))
+	}
 }
 
 func parse_query(raw_answer []byte) (*dns.Msg, *dns.Msg, error) {
@@ -308,7 +311,7 @@ func pcap2ymmv(fname string,
 		}
 		pkt.Decode()
 		if debug {
-			fmt.Fprintf(os.Stderr, "pcap2ymmv read packet\n")
+			fmt.Fprintf(os.Stderr, "pcap2ymmv read packet (len:%d, caplen:%d, headers:%d)\n", pkt.Len, pkt.Caplen, len(pkt.Headers))
 		}
 
 		// parse each header so we can see if we want this packet
@@ -367,7 +370,7 @@ func pcap2ymmv(fname string,
 			// parse the payload as the DNS message
 			query, answer, err := parse_query(pkt.Payload)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "error unpacking DNS message: %s\n", err)
+				fmt.Fprintf(os.Stderr, "pcap2ymmv error unpacking DNS message: %s\n", err)
 			} else {
 				ymmv_write(ip_family, ip_addr,
 					*query, pkt.Time, *answer)
