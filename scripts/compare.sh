@@ -28,7 +28,7 @@
 # shane@biigroup.cn
 
 # executables
-YMMV_DIR=..
+YMMV_DIR=`dirname $0`/..
 PCAP2YMMV=${YMMV_DIR}/pcap2ymmv/pcap2ymmv
 YMMV=${YMMV_DIR}/ymmv/ymmv
 
