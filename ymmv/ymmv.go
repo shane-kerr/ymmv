@@ -387,7 +387,8 @@ func (a rr_sort) Less(i, j int) bool {
 func extract_rrset(rrs []dns.RR) map[string][]dns.RR {
 	rrsets := make(map[string][]dns.RR)
 	for _, rr := range rrs {
-		key := fmt.Sprintf("%06d_", rr.Header().Rrtype) + strings.ToLower(rr.Header().Name)
+		rr.Header().Name = strings.ToLower(rr.Header().Name)
+		key := fmt.Sprintf("%06d_", rr.Header().Rrtype) + rr.Header().Name
 		rrset, ok := rrsets[key]
 		if !ok {
 			rrset = make([]dns.RR, 0)
