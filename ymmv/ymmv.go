@@ -459,7 +459,22 @@ func compare_section(iana []dns.RR, yeti []dns.RR) (iana_only []dns.RR, yeti_onl
 	return iana_only, yeti_only
 }
 
+func skip_comparison(query *dns.Msg) bool {
+	if query.Question[0].Name == "id.server." {
+		return true
+	}
+	if query.Question[0].Name == "hostname.bind." {
+		return true
+	}
+	return false
+}
+
 func compare_resp(iana *dns.Msg, yeti *dns.Msg) (result string) {
+	// shortcut comparison for some queries
+	if skip_comparison(iana) {
+		return ""
+	}
+
 	result = ""
 	equivalent := true
 	if iana.Response != yeti.Response {
@@ -506,6 +521,7 @@ func compare_resp(iana *dns.Msg, yeti *dns.Msg) (result string) {
 			dns.RcodeToString[yeti.Rcode])
 		equivalent = false
 	}
+	is_root_soa_query := false
 	if (len(iana.Question) != 1) || (len(yeti.Question) != 1) {
 		result += fmt.Sprintf("Bogus number of questions: IANA %d, Yeti %d\n",
 			len(iana.Question), len(yeti.Question))
@@ -516,46 +532,102 @@ func compare_resp(iana *dns.Msg, yeti *dns.Msg) (result string) {
 				iana.Question[0], yeti.Question[0])
 			equivalent = false
 		}
-	}
-	sort.Sort(rr_sort(iana.Answer))
-	sort.Sort(rr_sort(yeti.Answer))
-	iana_only, yeti_only := compare_section(iana.Answer, yeti.Answer)
-	if (len(iana_only) > 0) || (len(yeti_only) > 0) {
-		equivalent = false
-		if len(iana_only) > 0 {
-			result += fmt.Sprint("Answer section, IANA only\n")
-			for _, rr := range iana_only {
-				result += fmt.Sprintf("%s\n", rr)
-			}
-		}
-		if len(yeti_only) > 0 {
-			result += fmt.Sprint("Answer section, Yeti only\n")
-			for _, rr := range yeti_only {
-				result += fmt.Sprintf("%s\n", rr)
-			}
+		if (iana.Question[0].Qtype == dns.TypeSOA) &&
+                   (iana.Question[0].Name == ".") {
+			is_root_soa_query = true
 		}
 	}
-	sort.Sort(rr_sort(iana.Ns))
-	sort.Sort(rr_sort(yeti.Ns))
-	iana_only, yeti_only = compare_section(iana.Ns, yeti.Ns)
-	if (len(iana_only) > 0) || (len(yeti_only) > 0) {
-		equivalent = false
-		if len(iana_only) > 0 {
-			result += fmt.Sprint("Authority section, IANA only\n")
-			for _, rr := range iana_only {
-				result += fmt.Sprintf("%s\n", rr)
+	if is_root_soa_query {
+		if len(iana.Answer) != 1 {
+			equivalent = false
+			result += "IANA missing SOA for .\n"
+		}
+		if len(yeti.Answer) != 1 {
+			equivalent = false
+			result += "Yeti missing SOA for .\n"
+		}
+		if equivalent {
+			iana_soa := iana.Answer[0].(*dns.SOA)
+			yeti_soa := yeti.Answer[0].(*dns.SOA)
+/*
+			if iana_soa.Ns != yeti_soa.Ns {
+				equivalent = false
+				result += fmt.Sprintf("IANA SOA primary master: %s, Yeti SOA primary master: %s\n",
+					iana_soa.Ns, yeti_soa.Ns)
+			}
+			if iana_soa.Mbox != yeti_soa.Mbox {
+				equivalent = false
+				result += fmt.Sprintf("IANA SOA email: %s, Yeti SOA email: %s\n",
+					iana_soa.Mbox, yeti_soa.Mbox)
+			}
+ */
+			if iana_soa.Serial != yeti_soa.Serial {
+				equivalent = false
+				result += fmt.Sprintf("IANA SOA serial: %d, Yeti SOA serial: %d\n",
+					iana_soa.Serial, yeti_soa.Serial)
+			}
+			if iana_soa.Refresh != yeti_soa.Refresh {
+				equivalent = false
+				result += fmt.Sprintf("IANA SOA refresh: %d, Yeti SOA refresh: %d\n",
+					iana_soa.Refresh, yeti_soa.Refresh)
+			}
+			if iana_soa.Retry != yeti_soa.Retry {
+				equivalent = false
+				result += fmt.Sprintf("IANA SOA retry: %d, Yeti SOA retry: %d\n",
+					iana_soa.Retry, yeti_soa.Retry)
+			}
+			if iana_soa.Expire != yeti_soa.Expire {
+				equivalent = false
+				result += fmt.Sprintf("IANA SOA expiry: %d, Yeti SOA expiry: %d\n",
+					iana_soa.Expire, yeti_soa.Expire)
+			}
+			if iana_soa.Minttl != yeti_soa.Minttl {
+				equivalent = false
+				result += fmt.Sprintf("IANA SOA negative TTL: %d, Yeti SOA negative TTL: %d\n",
+					iana_soa.Minttl, yeti_soa.Minttl)
 			}
 		}
-		if len(yeti_only) > 0 {
-			result += fmt.Sprint("Authority section, Yeti only\n")
-			for _, rr := range yeti_only {
-				result += fmt.Sprintf("%s\n", rr)
+	} else {
+		sort.Sort(rr_sort(iana.Answer))
+		sort.Sort(rr_sort(yeti.Answer))
+		iana_only, yeti_only := compare_section(iana.Answer, yeti.Answer)
+		if (len(iana_only) > 0) || (len(yeti_only) > 0) {
+			equivalent = false
+			if len(iana_only) > 0 {
+				result += fmt.Sprint("Answer section, IANA only\n")
+				for _, rr := range iana_only {
+					result += fmt.Sprintf("%s\n", rr)
+				}
+			}
+			if len(yeti_only) > 0 {
+				result += fmt.Sprint("Answer section, Yeti only\n")
+				for _, rr := range yeti_only {
+					result += fmt.Sprintf("%s\n", rr)
+				}
+			}
+		}
+		sort.Sort(rr_sort(iana.Ns))
+		sort.Sort(rr_sort(yeti.Ns))
+		iana_only, yeti_only = compare_section(iana.Ns, yeti.Ns)
+		if (len(iana_only) > 0) || (len(yeti_only) > 0) {
+			equivalent = false
+			if len(iana_only) > 0 {
+				result += fmt.Sprint("Authority section, IANA only\n")
+				for _, rr := range iana_only {
+					result += fmt.Sprintf("%s\n", rr)
+				}
+			}
+			if len(yeti_only) > 0 {
+				result += fmt.Sprint("Authority section, Yeti only\n")
+				for _, rr := range yeti_only {
+					result += fmt.Sprintf("%s\n", rr)
+				}
 			}
 		}
 	}
 	sort.Sort(rr_sort(iana.Extra))
 	sort.Sort(rr_sort(yeti.Extra))
-	iana_only, yeti_only = compare_additional(iana.Extra, yeti.Extra)
+	iana_only, yeti_only := compare_additional(iana.Extra, yeti.Extra)
 	if (len(iana_only) > 0) || (len(yeti_only) > 0) {
 		equivalent = false
 		if len(iana_only) > 0 {
@@ -579,16 +651,6 @@ func compare_resp(iana *dns.Msg, yeti *dns.Msg) (result string) {
 		//			iana, yeti)
 	}
 	return result
-}
-
-func is_blacklisted(query *dns.Msg) bool {
-	if query.Question[0].Name == "id.server." {
-		return true
-	}
-	if query.Question[0].Name == "hostname.bind." {
-		return true
-	}
-	return false
 }
 
 func yeti_query(gen *yeti_server_generator, iana_query *dns.Msg, iana_resp *dns.Msg, output chan string) {
@@ -661,10 +723,8 @@ func main() {
 			if y == nil {
 				break
 			}
-			if !is_blacklisted(y.query) {
-				go yeti_query(servers, y.query, y.answer, query_output)
-				query_count += 1
-			}
+			go yeti_query(servers, y.query, y.answer, query_output)
+			query_count += 1
 		// comparison done
 		case str := <-query_output:
 			fmt.Print(str)
