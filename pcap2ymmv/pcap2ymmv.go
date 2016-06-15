@@ -1,5 +1,6 @@
-// TODO: IPv4 parsing
+// TODO: IPv4 parsing?
 // TODO: use dnsstub library
+// TODO: match outbound to inbound queries
 package main
 
 import (
@@ -90,7 +91,7 @@ func stub_resolve(questions <-chan stub_resolve_info,
 // pcap later.)
 func lookup_root_server_addresses() map[string]bool {
 	if debug {
-		fmt.Fprintf(os.Stderr, "lookup_root_server_addresses()\n")
+		fmt.Fprintf(os.Stderr, "pcap2ymmv lookup_root_server_addresses()\n")
 	}
 	// look up the NS of the IANA root
 	root_client := new(dns.Client)
@@ -256,23 +257,11 @@ func parse_query(raw_answer []byte) (*dns.Msg, *dns.Msg, error) {
 	query.Authoritative = false
 	query.Truncated = false
 	query.AuthenticatedData = true
-	query.CheckingDisabled = false
+	query.CheckingDisabled = true
 	query.Rcode = 0
 	query.Answer = nil
 	query.Ns = nil
-	old_extra := query.Extra
 	query.Extra = nil
-	// add our opt section back - probably not really
-	// what we want, but what else can we do?
-	if old_extra != nil {
-		for _, extra := range old_extra {
-			switch extra.(type) {
-			case *dns.OPT:
-				opt := extra.(*dns.OPT)
-				query.Extra = []dns.RR{opt}
-			}
-		}
-	}
 	return query, answer, nil
 }
 
