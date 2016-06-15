@@ -474,29 +474,29 @@ func compare_resp(iana *dns.Msg, yeti *dns.Msg) (result string) {
 		equivalent = false
 	}
 	if iana.Authoritative != yeti.Authoritative {
-		result += fmt.Sprintf("Authoritative flag mismatch: IANA %s vs Yeti %s\n",
+		result += fmt.Sprintf("Authoritative flag mismatch: IANA %t vs Yeti %t\n",
 			iana.Authoritative, yeti.Authoritative)
 		equivalent = false
 	}
 	// truncated... hmmm...
 	if iana.RecursionDesired != yeti.RecursionDesired {
-		result += fmt.Sprintf("Recursion desired flag mismatch: IANA %s vs Yeti %s\n",
+		result += fmt.Sprintf("Recursion desired flag mismatch: IANA %t vs Yeti %t\n",
 			iana.RecursionDesired, yeti.RecursionDesired)
 		equivalent = false
 	}
 	if iana.RecursionAvailable != yeti.RecursionAvailable {
-		result += fmt.Sprintf("Recursion available flag mismatch: IANA %s vs Yeti %s\n",
+		result += fmt.Sprintf("Recursion available flag mismatch: IANA %t vs Yeti %t\n",
 			strconv.FormatBool(iana.RecursionAvailable),
 			strconv.FormatBool(yeti.RecursionAvailable))
 		equivalent = false
 	}
 	if iana.AuthenticatedData != yeti.AuthenticatedData {
-		result += fmt.Sprintf("Authenticated data flag mismatch: IANA %s vs Yeti %s\n",
+		result += fmt.Sprintf("Authenticated data flag mismatch: IANA %t vs Yeti %t\n",
 			iana.AuthenticatedData, yeti.AuthenticatedData)
 		equivalent = false
 	}
 	if iana.CheckingDisabled != yeti.CheckingDisabled {
-		result += fmt.Sprintf("Checking disabled flag mismatch: IANA %s vs Yeti %s\n",
+		result += fmt.Sprintf("Checking disabled flag mismatch: IANA %t vs Yeti %t\n",
 			iana.CheckingDisabled, yeti.CheckingDisabled)
 		equivalent = false
 	}
