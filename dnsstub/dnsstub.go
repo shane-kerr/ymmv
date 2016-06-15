@@ -54,7 +54,7 @@ func DnsQuery(server string, query *dns.Msg) (*dns.Msg, time.Duration, error) {
 	}
 	query.Id = id
 	r, rtt, err := dnsClient.Exchange(query, server)
-	if err != nil {
+	if (err != nil) && (err != dns.ErrTruncated) {
 		return nil, 0, err
 	}
 	if (r.Rcode == dns.RcodeSuccess) && !r.Truncated {
