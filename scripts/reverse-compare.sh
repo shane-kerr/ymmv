@@ -56,4 +56,4 @@ for NS in $YETI_NS; do
   YETI_ADDR=`dig +short -t aaaa $NS`" $YETI_ADDR"
 done
 
-$DUMP | $PCAP2YMMV -d $YETI_ADDR | $YMMV $IANA_ADDR
+$DUMP | $PCAP2YMMV $YETI_ADDR | $YMMV $IANA_ADDR
