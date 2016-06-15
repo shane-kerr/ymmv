@@ -422,6 +422,10 @@ func compare_additional(iana []dns.RR, yeti []dns.RR) (iana_only []dns.RR, yeti_
 		if iana_rrset[0].Header().Rrtype == dns.TypeOPT {
 			continue
 		}
+		// and don't compare signatures
+		if iana_rrset[0].Header().Rrtype == dns.TypeRRSIG {
+			continue
+		}
 		yeti_rrset, ok := yeti_rr_map[key]
 		if ok {
 			if !reflect.DeepEqual(iana_rrset, yeti_rrset) {
@@ -445,6 +449,10 @@ func compare_section(iana []dns.RR, yeti []dns.RR) (iana_only []dns.RR, yeti_onl
 	copy(yeti_only, yeti)
 	for _, iana_rr := range iana {
 		found := false
+		// don't compare signatures
+		if iana_rr.Header().Rrtype == dns.TypeRRSIG {
+			continue
+		}
 		for n, yeti_rr := range yeti_only {
 			if strings.ToLower(iana_rr.String()) == strings.ToLower(yeti_rr.String()) {
 				yeti_only = append(yeti_only[:n], yeti_only[n+1:]...)
