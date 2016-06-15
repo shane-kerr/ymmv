@@ -445,8 +445,12 @@ func compare_section(iana []dns.RR, yeti []dns.RR) (iana_only []dns.RR, yeti_onl
 	// We use nested loops, which not especially efficient,
 	// but we only expect a small number of RR in a section
 	iana_only = make([]dns.RR, 0)
-	yeti_only = make([]dns.RR, len(yeti))
-	copy(yeti_only, yeti)
+	yeti_only = make([]dns.RR, 0, len(yeti))
+	for _, yeti_rr := range yeti {
+		if yeti_rr.Header().Rrtype != dns.TypeRRSIG {
+			yeti_only = append(yeti_only, yeti_rr)
+		}
+	}
 	for _, iana_rr := range iana {
 		found := false
 		// don't compare signatures
@@ -669,6 +673,8 @@ func yeti_query(gen *yeti_server_generator, iana_query *dns.Msg, iana_resp *dns.
 			iana_query.Question[0].Name,
 			dns.TypeToString[iana_query.Question[0].Qtype],
 			server)
+		// XXX: hack hack set DO bit
+		iana_query.SetEdns0(4096, true)
 		//		yeti_resp, qtime, err := dnsstub.DnsQuery(server, iana_query)
 		yeti_resp, _, err := dnsstub.DnsQuery(server, iana_query)
 		if err != nil {
