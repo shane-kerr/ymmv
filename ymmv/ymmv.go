@@ -581,6 +581,16 @@ func compare_resp(iana *dns.Msg, yeti *dns.Msg) (result string) {
 	return result
 }
 
+func is_blacklisted(query *dns.Msg) bool {
+	if query.Question[0].Name == "id.server." {
+		return true
+	}
+	if query.Question[0].Name == "hostname.bind." {
+		return true
+	}
+	return false
+}
+
 func yeti_query(gen *yeti_server_generator, iana_query *dns.Msg, iana_resp *dns.Msg, output chan string) {
 	result := ""
 	for _, ip := range gen.next() {
@@ -651,8 +661,10 @@ func main() {
 			if y == nil {
 				break
 			}
-			go yeti_query(servers, y.query, y.answer, query_output)
-			query_count += 1
+			if !is_blacklisted(y.query) {
+				go yeti_query(servers, y.query, y.answer, query_output)
+				query_count += 1
+			}
 		// comparison done
 		case str := <-query_output:
 			fmt.Print(str)
