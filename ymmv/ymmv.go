@@ -441,20 +441,30 @@ func compare_additional(iana []dns.RR, yeti []dns.RR) (iana_only []dns.RR, yeti_
 	return iana_only, yeti_only
 }
 
-func compare_section(iana []dns.RR, yeti []dns.RR) (iana_only []dns.RR, yeti_only []dns.RR) {
-	// We use nested loops, which not especially efficient,
-	// but we only expect a small number of RR in a section
+func compare_section(iana []dns.RR, yeti []dns.RR) (iana_only []dns.RR, yeti_only []dns.RR,
+	iana_root_soa *dns.SOA, yeti_root_soa *dns.SOA) {
+	iana_root_soa = nil
+	yeti_root_soa = nil
 	iana_only = make([]dns.RR, 0)
 	yeti_only = make([]dns.RR, 0, len(yeti))
 	for _, yeti_rr := range yeti {
+		if (yeti_rr.Header().Rrtype == dns.TypeSOA) && (yeti_rr.Header().Name == ".") {
+			yeti_root_soa = yeti_rr.(*dns.SOA)
+			continue
+		}
 		if yeti_rr.Header().Rrtype != dns.TypeRRSIG {
 			yeti_only = append(yeti_only, yeti_rr)
 		}
 	}
+	// We use nested loops, which not especially efficient,
+	// but we only expect a small number of RR in a section
 	for _, iana_rr := range iana {
 		found := false
 		// don't compare signatures
 		if iana_rr.Header().Rrtype == dns.TypeRRSIG {
+			continue
+		} else if (iana_rr.Header().Rrtype == dns.TypeSOA) && (iana_rr.Header().Name == ".") {
+			iana_root_soa = iana_rr.(*dns.SOA)
 			continue
 		}
 		for n, yeti_rr := range yeti_only {
@@ -468,7 +478,7 @@ func compare_section(iana []dns.RR, yeti []dns.RR) (iana_only []dns.RR, yeti_onl
 			iana_only = append(iana_only, iana_rr)
 		}
 	}
-	return iana_only, yeti_only
+	return iana_only, yeti_only, iana_root_soa, yeti_root_soa
 }
 
 func skip_comparison(query *dns.Msg) bool {
@@ -479,6 +489,55 @@ func skip_comparison(query *dns.Msg) bool {
 		return true
 	}
 	return false
+}
+
+func compare_soa(iana_soa *dns.SOA, yeti_soa *dns.SOA) (result string) {
+	result = ""
+
+	if iana_soa == nil {
+		if yeti_soa != nil {
+			result += fmt.Sprintf("SOA only for Yeti: %s\n", yeti_soa)
+		}
+		return result
+	}
+	if yeti_soa == nil {
+		return fmt.Sprintf("SOA only for IANA: %s\n", iana_soa)
+	}
+
+/*
+	if iana_soa.Ns != yeti_soa.Ns {
+		result += fmt.Sprintf("IANA SOA primary master: %s, Yeti SOA primary master: %s\n",
+			iana_soa.Ns, yeti_soa.Ns)
+	}
+*/
+/*
+	if iana_soa.Mbox != yeti_soa.Mbox {
+		result += fmt.Sprintf("IANA SOA email: %s, Yeti SOA email: %s\n",
+			iana_soa.Mbox, yeti_soa.Mbox)
+	}
+*/
+	if iana_soa.Serial != yeti_soa.Serial {
+		result += fmt.Sprintf("IANA SOA serial: %d, Yeti SOA serial: %d\n",
+			iana_soa.Serial, yeti_soa.Serial)
+	}
+	if iana_soa.Refresh != yeti_soa.Refresh {
+		result += fmt.Sprintf("IANA SOA refresh: %d, Yeti SOA refresh: %d\n",
+			iana_soa.Refresh, yeti_soa.Refresh)
+	}
+	if iana_soa.Retry != yeti_soa.Retry {
+		result += fmt.Sprintf("IANA SOA retry: %d, Yeti SOA retry: %d\n",
+			iana_soa.Retry, yeti_soa.Retry)
+	}
+	if iana_soa.Expire != yeti_soa.Expire {
+		result += fmt.Sprintf("IANA SOA expiry: %d, Yeti SOA expiry: %d\n",
+			iana_soa.Expire, yeti_soa.Expire)
+	}
+	if iana_soa.Minttl != yeti_soa.Minttl {
+		result += fmt.Sprintf("IANA SOA negative TTL: %d, Yeti SOA negative TTL: %d\n",
+			iana_soa.Minttl, yeti_soa.Minttl)
+	}
+
+	return result
 }
 
 func compare_resp(iana *dns.Msg, yeti *dns.Msg) (result string) {
@@ -522,124 +581,61 @@ func compare_resp(iana *dns.Msg, yeti *dns.Msg) (result string) {
 			iana.AuthenticatedData, yeti.AuthenticatedData)
 		equivalent = false
 	}
+// XXX: temporarily disabled
+/*
 	if iana.CheckingDisabled != yeti.CheckingDisabled {
 		result += fmt.Sprintf("Checking disabled flag mismatch: IANA %t vs Yeti %t\n",
 			iana.CheckingDisabled, yeti.CheckingDisabled)
 		equivalent = false
 	}
+*/
 	if iana.Rcode != yeti.Rcode {
 		result += fmt.Sprintf("Rcode mismatch: IANA %s vs Yeti %s\n",
 			dns.RcodeToString[iana.Rcode],
 			dns.RcodeToString[yeti.Rcode])
 		equivalent = false
 	}
-	is_root_soa_query := false
-	if (len(iana.Question) != 1) || (len(yeti.Question) != 1) {
-		result += fmt.Sprintf("Bogus number of questions: IANA %d, Yeti %d\n",
-			len(iana.Question), len(yeti.Question))
+	sort.Sort(rr_sort(iana.Answer))
+	sort.Sort(rr_sort(yeti.Answer))
+	iana_only, yeti_only, iana_root_soa, yeti_root_soa := compare_section(iana.Answer, yeti.Answer)
+	if (len(iana_only) > 0) || (len(yeti_only) > 0) {
 		equivalent = false
-	} else {
-		if iana.Question[0] != yeti.Question[0] {
-			result += fmt.Sprintf("Question mismatch: IANA %s vs Yeti %s\n",
-				iana.Question[0], yeti.Question[0])
-			equivalent = false
-		}
-		if (iana.Question[0].Qtype == dns.TypeSOA) &&
-                   (iana.Question[0].Name == ".") {
-			is_root_soa_query = true
-		}
-	}
-	if is_root_soa_query {
-		if len(iana.Answer) != 1 {
-			equivalent = false
-			result += "IANA missing SOA for .\n"
-		}
-		if len(yeti.Answer) != 1 {
-			equivalent = false
-			result += "Yeti missing SOA for .\n"
-		}
-		if equivalent {
-			iana_soa := iana.Answer[0].(*dns.SOA)
-			yeti_soa := yeti.Answer[0].(*dns.SOA)
-/*
-			if iana_soa.Ns != yeti_soa.Ns {
-				equivalent = false
-				result += fmt.Sprintf("IANA SOA primary master: %s, Yeti SOA primary master: %s\n",
-					iana_soa.Ns, yeti_soa.Ns)
-			}
-			if iana_soa.Mbox != yeti_soa.Mbox {
-				equivalent = false
-				result += fmt.Sprintf("IANA SOA email: %s, Yeti SOA email: %s\n",
-					iana_soa.Mbox, yeti_soa.Mbox)
-			}
- */
-			if iana_soa.Serial != yeti_soa.Serial {
-				equivalent = false
-				result += fmt.Sprintf("IANA SOA serial: %d, Yeti SOA serial: %d\n",
-					iana_soa.Serial, yeti_soa.Serial)
-			}
-			if iana_soa.Refresh != yeti_soa.Refresh {
-				equivalent = false
-				result += fmt.Sprintf("IANA SOA refresh: %d, Yeti SOA refresh: %d\n",
-					iana_soa.Refresh, yeti_soa.Refresh)
-			}
-			if iana_soa.Retry != yeti_soa.Retry {
-				equivalent = false
-				result += fmt.Sprintf("IANA SOA retry: %d, Yeti SOA retry: %d\n",
-					iana_soa.Retry, yeti_soa.Retry)
-			}
-			if iana_soa.Expire != yeti_soa.Expire {
-				equivalent = false
-				result += fmt.Sprintf("IANA SOA expiry: %d, Yeti SOA expiry: %d\n",
-					iana_soa.Expire, yeti_soa.Expire)
-			}
-			if iana_soa.Minttl != yeti_soa.Minttl {
-				equivalent = false
-				result += fmt.Sprintf("IANA SOA negative TTL: %d, Yeti SOA negative TTL: %d\n",
-					iana_soa.Minttl, yeti_soa.Minttl)
+		if len(iana_only) > 0 {
+			result += fmt.Sprint("Answer section, IANA only\n")
+			for _, rr := range iana_only {
+				result += fmt.Sprintf("%s\n", rr)
 			}
 		}
-	} else {
-		sort.Sort(rr_sort(iana.Answer))
-		sort.Sort(rr_sort(yeti.Answer))
-		iana_only, yeti_only := compare_section(iana.Answer, yeti.Answer)
-		if (len(iana_only) > 0) || (len(yeti_only) > 0) {
-			equivalent = false
-			if len(iana_only) > 0 {
-				result += fmt.Sprint("Answer section, IANA only\n")
-				for _, rr := range iana_only {
-					result += fmt.Sprintf("%s\n", rr)
-				}
-			}
-			if len(yeti_only) > 0 {
-				result += fmt.Sprint("Answer section, Yeti only\n")
-				for _, rr := range yeti_only {
-					result += fmt.Sprintf("%s\n", rr)
-				}
-			}
-		}
-		sort.Sort(rr_sort(iana.Ns))
-		sort.Sort(rr_sort(yeti.Ns))
-		iana_only, yeti_only = compare_section(iana.Ns, yeti.Ns)
-		if (len(iana_only) > 0) || (len(yeti_only) > 0) {
-			equivalent = false
-			if len(iana_only) > 0 {
-				result += fmt.Sprint("Authority section, IANA only\n")
-				for _, rr := range iana_only {
-					result += fmt.Sprintf("%s\n", rr)
-				}
-			}
-			if len(yeti_only) > 0 {
-				result += fmt.Sprint("Authority section, Yeti only\n")
-				for _, rr := range yeti_only {
-					result += fmt.Sprintf("%s\n", rr)
-				}
+		if len(yeti_only) > 0 {
+			result += fmt.Sprint("Answer section, Yeti only\n")
+			for _, rr := range yeti_only {
+				result += fmt.Sprintf("%s\n", rr)
 			}
 		}
 	}
+	result += compare_soa(iana_root_soa, yeti_root_soa)
+	sort.Sort(rr_sort(iana.Ns))
+	sort.Sort(rr_sort(yeti.Ns))
+	iana_only, yeti_only, iana_root_soa, yeti_root_soa = compare_section(iana.Ns, yeti.Ns)
+	if (len(iana_only) > 0) || (len(yeti_only) > 0) {
+		equivalent = false
+		if len(iana_only) > 0 {
+			result += fmt.Sprint("Authority section, IANA only\n")
+			for _, rr := range iana_only {
+				result += fmt.Sprintf("%s\n", rr)
+			}
+		}
+		if len(yeti_only) > 0 {
+			result += fmt.Sprint("Authority section, Yeti only\n")
+			for _, rr := range yeti_only {
+				result += fmt.Sprintf("%s\n", rr)
+			}
+		}
+	}
+	result += compare_soa(iana_root_soa, yeti_root_soa)
 	sort.Sort(rr_sort(iana.Extra))
 	sort.Sort(rr_sort(yeti.Extra))
-	iana_only, yeti_only := compare_additional(iana.Extra, yeti.Extra)
+	iana_only, yeti_only = compare_additional(iana.Extra, yeti.Extra)
 	if (len(iana_only) > 0) || (len(yeti_only) > 0) {
 		equivalent = false
 		if len(iana_only) > 0 {
