@@ -99,7 +99,7 @@ func read_next_message() (y *ymmv_message, err error) {
 		ip_family = 6
 	} else {
 		errmsg := fmt.Sprintf("Expecting '4' or '6' for IP family, got '%s'",
-			ip_family)
+			tmp_ip_family)
 		return nil, errors.New(errmsg)
 	}
 

@@ -1,10 +1,14 @@
+// TODO: IPv4 parsing
+// TODO: use dnsstub library
 package main
 
 import (
 	"encoding/binary"
 	"fmt"
+	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
+	"github.com/google/gopacket/pcapgo"
 	"github.com/miekg/dns"
-	"github.com/miekg/pcap"
 	"log"
 	"net"
 	"os"
@@ -21,28 +25,23 @@ var (
 )
 
 // If we were passed name server addresses, parse them with this function.
-func parse_root_server_addresses(addrs []string) (map[[4]byte]bool, map[[16]byte]bool) {
+func parse_root_server_addresses(addrs []string) map[string]bool {
 	if debug {
 		fmt.Fprintf(os.Stderr, "pcap2ymmv parse_root_server_addresses()\n")
 		fmt.Fprintf(os.Stderr, "pcap2ymmv addrs:%s\n", addrs)
 	}
-	root_addresses4 := make(map[[4]byte]bool)
-	root_addresses6 := make(map[[16]byte]bool)
+	root_addresses := make(map[string]bool)
 	for _, addr := range addrs {
 		ip := net.ParseIP(addr)
-		if ip.To4() == nil {
-			// IPv6 address
-			var aaaa [16]byte
-			copy(aaaa[:], ip[0:16])
-			root_addresses6[aaaa] = true
-		} else {
-			// IPv4 address
-			var a [4]byte
-			copy(a[:], ip.To4()[0:4])
-			root_addresses4[a] = true
+		if ip == nil {
+			log.Fatal("Error parsing address '%s'", addr)
+		}
+		root_addresses[ip.String()] = true
+		if debug {
+			fmt.Fprintf(os.Stderr, "pcap2ymmv checking for %s\n", ip.String())
 		}
 	}
-	return root_addresses4, root_addresses6
+	return root_addresses
 }
 
 // We have a goroutine to act as a stub resolver, and use this
@@ -89,7 +88,7 @@ func stub_resolve(questions <-chan stub_resolve_info,
 // the binary values of the IPv4 and IPv6 addresses. (It's a bit clumsy,
 // but it allows us to do quick and easy lookups of the addresses in the
 // pcap later.)
-func lookup_root_server_addresses() (map[[4]byte]bool, map[[16]byte]bool) {
+func lookup_root_server_addresses() map[string]bool {
 	if debug {
 		fmt.Fprintf(os.Stderr, "lookup_root_server_addresses()\n")
 	}
@@ -128,8 +127,7 @@ func lookup_root_server_addresses() (map[[4]byte]bool, map[[16]byte]bool) {
 		info.rtype = dns.TypeA
 		questions <- *info
 	}
-	root_addresses4 := make(map[[4]byte]bool)
-	root_addresses6 := make(map[[16]byte]bool)
+	root_addresses := make(map[string]bool)
 	for i := 0; i < len(root_servers)*2; i++ {
 		response := <-results
 		if response.answer == nil {
@@ -143,25 +141,21 @@ func lookup_root_server_addresses() (map[[4]byte]bool, map[[16]byte]bool) {
 				if debug {
 					fmt.Fprintf(os.Stderr, "pcap2ymmv IANA server: %s\n", aaaa_s)
 				}
-				var aaaa [16]byte
-				copy(aaaa[:], net.ParseIP(aaaa_s)[0:16])
-				root_addresses6[aaaa] = true
+				root_addresses[aaaa_s] = true
 			case *dns.A:
 				a_s := root_address.(*dns.A).A.String()
 				if debug {
 					fmt.Fprintf(os.Stderr, "pcap2ymmv IANA server: %s\n", a_s)
 				}
-				var a [4]byte
-				copy(a[:], net.ParseIP(a_s).To4()[0:4])
-				root_addresses4[a] = true
+				root_addresses[a_s] = true
 			}
 		}
 	}
 	close(questions)
-	return root_addresses4, root_addresses6
+	return root_addresses
 }
 
-func ymmv_write(ip_family int, addr []byte, query dns.Msg,
+func ymmv_write(ip_family int, addr net.IP, query dns.Msg,
 	answer_time time.Time, answer dns.Msg) {
 	// output magic value
 	_, err := os.Stdout.Write([]byte("ymmv"))
@@ -284,9 +278,7 @@ func parse_query(raw_answer []byte) (*dns.Msg, *dns.Msg, error) {
 
 // Look in the named file and find any packets that are from our root
 // servers on port 53.
-func pcap2ymmv(fname string,
-	root_addresses4 map[[4]byte]bool,
-	root_addresses6 map[[16]byte]bool) {
+func pcap2ymmv(fname string, root_addresses map[string]bool) {
 	// open our pcap file
 	var file *os.File
 	if fname == "-" {
@@ -298,84 +290,89 @@ func pcap2ymmv(fname string,
 		}
 		file = named_file
 	}
-	pcap_file, err := pcap.NewReader(file)
+	pcap_file, err := pcapgo.NewReader(file)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	for {
 		// reach each packet
-		pkt := pcap_file.Next()
-		if pkt == nil {
+		pkt_bytes, ci, err := pcap_file.ReadPacketData()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "pcap2ymmv error reading packet; %s\n", err)
 			break
 		}
-		pkt.Decode()
 		if debug {
-			fmt.Fprintf(os.Stderr, "pcap2ymmv read packet (len:%d, caplen:%d, headers:%d)\n", pkt.Len, pkt.Caplen, len(pkt.Headers))
+			fmt.Fprintf(os.Stderr, "pcap2ymmv read packet (len:%d)\n", len(pkt_bytes))
 		}
 
-		// parse each header so we can see if we want this packet
-		ip_family := 0
-		var ip_addr []byte
-		valid_udp := false
-		for _, hdr := range pkt.Headers {
-			switch hdr.(type) {
-			case *pcap.Iphdr:
-				// check that the packet comes from one
-				// of the addresses that we are looking for
-				iphdr := hdr.(*pcap.Iphdr)
+		// check for match against IP addresses that we care about
+		ip_match := false
+		var ip_family int
+		var ip_addr net.IP
+		var udp *layers.UDP
+		ipv6packet := gopacket.NewPacket(pkt_bytes, layers.LayerTypeIPv6, gopacket.Default)
+		var ipv6 *layers.IPv6
+		if ipv6packet != nil {
+			ipv6, _ = ipv6packet.Layer(layers.LayerTypeIPv6).(*layers.IPv6)
+			//			ipv6, _ = ipv6Layer.(*layers.IPv6)
+		}
+		if ipv6 != nil {
+			if debug {
+				fmt.Fprintf(os.Stderr, "pcap2ymmv IPv6 %s\n", ipv6.SrcIP.String())
+			}
+			ip_family = 6
+			ip_addr = ipv6.SrcIP
+			_, ip_match = root_addresses[ipv6.SrcIP.String()]
+			if ip_match {
+				udp, _ = ipv6packet.Layer(layers.LayerTypeUDP).(*layers.UDP)
+			}
+		} else {
+			ipv4packet := gopacket.NewPacket(pkt_bytes, layers.LayerTypeIPv4, gopacket.Default)
+			var ipv4 *layers.IPv4
+			if ipv4packet != nil {
+				ipv4, _ = ipv4packet.Layer(layers.LayerTypeIPv4).(*layers.IPv4)
+				//				ipv4, _ = ipv4Layer.(*layers.IPv4)
+			}
+			if ipv4 != nil {
 				if debug {
-					fmt.Fprintf(os.Stderr, "pcap2ymmv source IP %s\n", net.IP(iphdr.SrcIp).String())
+					fmt.Fprintf(os.Stderr, "pcap2ymmv IPv4 %s\n", ipv4.SrcIP.String())
 				}
-				var addr [4]byte
-				copy(addr[:], iphdr.SrcIp[0:4])
-				_, found := root_addresses4[addr]
-				if found {
-					if debug {
-						fmt.Fprintf(os.Stderr, "pcap2ymmv address match\n")
-					}
-					ip_family = 4
-					ip_addr = make([]byte, 4)
-					copy(ip_addr[:], addr[0:4])
-				}
-			case *pcap.Ip6hdr:
-				iphdr := hdr.(*pcap.Ip6hdr)
-				if debug {
-					fmt.Fprintf(os.Stderr, "pcap2ymmv source IP %s\n", net.IP(iphdr.SrcIp).String())
-				}
-				var addr [16]byte
-				copy(addr[:], iphdr.SrcIp[0:16])
-				_, found := root_addresses6[addr]
-				if found {
-					if debug {
-						fmt.Fprintf(os.Stderr, "pcap2ymmv address match\n")
-					}
-					ip_family = 6
-					ip_addr = make([]byte, 16)
-					copy(ip_addr[:], addr[0:16])
-				}
-			case *pcap.Udphdr:
-				udphdr := hdr.(*pcap.Udphdr)
-				if udphdr.SrcPort == 53 {
-					valid_udp = true
+				ip_family = 4
+				ip_addr = ipv4.SrcIP
+				_, ip_match = root_addresses[ipv4.SrcIP.String()]
+				if ip_match {
+					udp, _ = ipv4packet.Layer(layers.LayerTypeUDP).(*layers.UDP)
 				}
 			}
+		}
+		if debug {
+			fmt.Fprintf(os.Stderr, "pcap2ymmv IP match %t\n", ip_match)
+		}
+		if !ip_match {
+			continue
+		}
+
+		// we only want port 53
+		if debug {
+			fmt.Fprintf(os.Stderr, "pcap2ymmv UDP port: %d\n", udp.SrcPort)
+		}
+		if udp.SrcPort != 53 {
+			continue
 		}
 
 		// if we got a valid IP and UDP packet, process it
-		if (ip_family != 0) && valid_udp {
-			if debug {
-				fmt.Fprintf(os.Stderr, "pcap2ymmv matched packet\n")
-			}
-			// parse the payload as the DNS message
-			query, answer, err := parse_query(pkt.Payload)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "pcap2ymmv error unpacking DNS message: %s\n", err)
-			} else {
-				ymmv_write(ip_family, ip_addr,
-					*query, pkt.Time, *answer)
-				os.Stdout.Sync()
-			}
+		if debug {
+			fmt.Fprintf(os.Stderr, "pcap2ymmv matched packet\n")
+		}
+
+		// parse the payload as the DNS message
+		query, answer, err := parse_query(udp.Payload)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "pcap2ymmv error unpacking DNS message: %s\n", err)
+		} else {
+			ymmv_write(ip_family, ip_addr, *query, ci.Timestamp, *answer)
+			os.Stdout.Sync()
 		}
 	}
 	file.Close()
@@ -399,14 +396,13 @@ func main() {
 	}
 
 	// get root server addresses
-	var root_addresses4 map[[4]byte]bool
-	var root_addresses6 map[[16]byte]bool
+	var root_addresses map[string]bool
 	if len(os.Args) > 1 {
-		root_addresses4, root_addresses6 = parse_root_server_addresses(os.Args[1:])
+		root_addresses = parse_root_server_addresses(os.Args[1:])
 	} else {
-		root_addresses4, root_addresses6 = lookup_root_server_addresses()
+		root_addresses = lookup_root_server_addresses()
 	}
 
 	// process stdin as a pcap file
-	pcap2ymmv("-", root_addresses4, root_addresses6)
+	pcap2ymmv("-", root_addresses)
 }

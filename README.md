@@ -34,11 +34,13 @@ Debian-derived systems installation will look something like this:
 
     $ sudo apt install libpcap-dev
 
-You need the Go language `pcap` and `dns` libraries from the awesome
-Miek Gieben:
+You need the Go language `dns` library from the awesome Miek Gieben:
 
-    $ go get github.com/miekg/pcap
     $ go get github.com/miekg/dns
+
+You also need the Go language packet library from Google:
+
+    $ go get github.com/google/gopacket
 
 To build the `pcap` to `ymmv` filter/converter:
 
