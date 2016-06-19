@@ -342,6 +342,12 @@ func pcap2ymmv(fname string, root_addresses map[string]bool) {
 			continue
 		}
 
+		// if we were unable to parse the UDP for some reason, report it
+		if udp == nil {
+			fmt.Fprintf(os.Stderr, "pcap2ymmv unable to parse UDP in packet from %s\n", ip_addr.String())
+			continue
+		}
+
 		// we only want port 53
 		if debug {
 			fmt.Fprintf(os.Stderr, "pcap2ymmv UDP port: %d\n", udp.SrcPort)
