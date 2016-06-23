@@ -28,7 +28,7 @@ type ymmv_message struct {
 	answer      *dns.Msg
 }
 
-func pad_right(s string, length int, pad string) string {
+func PadRight(s string, length int, pad string) string {
 	// if a string is longer than the desired length already, just use it
 	if len(s) >= length {
 		return s
@@ -51,21 +51,21 @@ func (y ymmv_message) print() {
 	}
 	header := fmt.Sprintf("===[ ymmv message (IPv%d, %s, %s) ]",
 		y.ip_family, protocol_str, y.addr)
-	fmt.Printf("%s\n", pad_right(header, 78, "="))
+	fmt.Printf("%s\n", PadRight(header, 78, "="))
 	fmt.Printf("%s\n", y.query)
 	if y.query_time.Unix() == 0 {
 		fmt.Printf(";; WHEN: unknown\n")
 	} else {
 		fmt.Printf(";; WHEN: %s\n", y.query_time)
 	}
-	fmt.Printf("%s\n", pad_right("", 78, "-"))
+	fmt.Printf("%s\n", PadRight("", 78, "-"))
 	fmt.Printf("%s\n", y.answer)
 	if y.answer_time.Unix() == 0 {
 		fmt.Printf(";; WHEN: unknown\n")
 	} else {
 		fmt.Printf(";; WHEN: %s\n", y.answer_time)
 	}
-	fmt.Printf("%s\n", pad_right("", 78, "-"))
+	fmt.Printf("%s\n", PadRight("", 78, "-"))
 }
 
 // TODO: return more details with err if underlying calls fail
