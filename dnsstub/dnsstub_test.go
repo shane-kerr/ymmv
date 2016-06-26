@@ -162,11 +162,12 @@ func InitDnsServer(hostports []string) (*DnsServer, error) {
 			return nil, err
 		}
 		udp_conns = append(udp_conns, udp_conn)
-		addrs = append(addrs, NetworkAddr{"udp", udp_conn.LocalAddr().String()})
+		new_hostport := udp_conn.LocalAddr().String()
+		addrs = append(addrs, NetworkAddr{"udp", new_hostport})
 		// start the UDP reader goroutine
 		go DnsMessageReadUDP(udp_conn, msg_chan)
 		// set up our TCP listener
-		tcp_addr, err := net.ResolveTCPAddr("tcp", hostport)
+		tcp_addr, err := net.ResolveTCPAddr("tcp", new_hostport)
 		if err != nil {
 			return nil, err
 		}
@@ -211,6 +212,19 @@ func (srv *DnsServer) Answer(answers []*dns.Msg) {
 		}
 	}
 }
+
+func SetupDnsServer() (server *DnsServer, err error) {
+	server = nil
+	for n := 0; (server == nil) && (n < 10); n++ {
+		server, err = InitDnsServer([]string{"[::1]:0",})
+		if server != nil {
+			break
+		}
+		// TODO: check for "port already in use"
+	}
+	return server, err
+}
+
 
 func TestDnsQuery(t *testing.T) {
 	server, err := InitDnsServer([]string{"[::1]:0",})
