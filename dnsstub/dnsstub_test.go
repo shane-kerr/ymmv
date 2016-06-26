@@ -139,10 +139,7 @@ func DnsMessageListenTCP(listener *net.TCPListener, msg_chan chan<- *DnsMessageR
 	}
 }
 
-// Note that we don't clean up bound addresses on error, because this is
-// for the test server. If this code was adapted for use in production
-// then these listeners would have to be closed on error.
-func InitDnsServer(hostports []string) (*DnsServer, error) {
+func InitDnsServer(hostports []string) (server *DnsServer, err error) {
 	addrs := make([]NetworkAddr, 0, 0)
 	tcp_listeners := make([]*net.TCPListener, 0, 0)
 	udp_conns := make([]*net.UDPConn, 0, 0)
@@ -155,11 +152,11 @@ func InitDnsServer(hostports []string) (*DnsServer, error) {
 		// set up our UDP listener
 		udp_addr, err := net.ResolveUDPAddr("udp", hostport)
 		if err != nil {
-			return nil, err
+			goto cleanup_error
 		}
 		udp_conn, err := net.ListenUDP("udp", udp_addr)
 		if err != nil {
-			return nil, err
+			goto cleanup_error
 		}
 		udp_conns = append(udp_conns, udp_conn)
 		new_hostport := udp_conn.LocalAddr().String()
@@ -169,23 +166,32 @@ func InitDnsServer(hostports []string) (*DnsServer, error) {
 		// set up our TCP listener
 		tcp_addr, err := net.ResolveTCPAddr("tcp", new_hostport)
 		if err != nil {
-			return nil, err
+			goto cleanup_error
 		}
 		tcp_listener, err := net.ListenTCP("tcp", tcp_addr)
 		if err != nil {
-			return nil, err
+			goto cleanup_error
 		}
 		tcp_listeners = append(tcp_listeners, tcp_listener)
 		addrs = append(addrs, NetworkAddr{"tcp", tcp_listener.Addr().String()})
 		// start the TCP reader goroutine
 		go DnsMessageListenTCP(tcp_listener, msg_chan)
 	}
-	var server DnsServer
+	server = new(DnsServer)
 	server.Addrs = addrs
 	server.TCPListeners = tcp_listeners
 	server.UDPConns = udp_conns
 	server.MsgReader = msg_chan
-	return &server, nil
+	return server, nil
+
+cleanup_error:
+	for _, listener := range(tcp_listeners) {
+		listener.Close()
+	}
+	for _, conn := range(udp_conns) {
+		conn.Close()
+	}
+	return nil, err
 }
 
 func (srv *DnsServer) Answer(answers []*dns.Msg) {
