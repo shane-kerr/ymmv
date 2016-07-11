@@ -146,7 +146,8 @@ func (resolver *StubResolver) WaitByHandle(handle int) (*dns.Msg, time.Duration,
 	// check any existing finished answers to see if we have ours
 	for n, a := range resolver.finished_answers {
 		if a.handle == handle {
-			resolver.finished_answers = append(resolver.finished_answers[:n], resolver.finished_answers[n+1:]...)
+			resolver.finished_answers = append(resolver.finished_answers[:n],
+				resolver.finished_answers[n+1:]...)
 			return a.answer, a.rtt, a.qname, a.rtype, a.err
 		}
 	}
