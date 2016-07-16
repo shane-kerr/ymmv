@@ -483,10 +483,23 @@ func compare_section(iana []dns.RR, yeti []dns.RR) (iana_only []dns.RR, yeti_onl
 }
 
 func skip_comparison(query *dns.Msg) bool {
-	if query.Question[0].Name == "id.server." {
+	name := strings.ToLower(query.Question[0].Name)
+	// of course the root zone itself is different, so skip that
+	if name == "." {
 		return true
 	}
-	if query.Question[0].Name == "hostname.bind." {
+	if name == "id.server." {
+		return true
+	}
+	if name == "hostname.bind." {
+		return true
+	}
+	if strings.HasSuffix(name, ".root-servers.net.") {
+		return true
+	}
+	// XXX: ARPA is tricky, since some of the IANA root servers
+	// are authoritative. For now, just skip these queries.
+	if strings.HasSuffix(name, ".arpa.") {
 		return true
 	}
 	return false
@@ -544,7 +557,7 @@ func compare_soa(iana_soa *dns.SOA, yeti_soa *dns.SOA) (result string) {
 func compare_resp(iana *dns.Msg, yeti *dns.Msg) (result string) {
 	// shortcut comparison for some queries
 	if skip_comparison(iana) {
-		return ""
+		return "Skipping query\n"
 	}
 
 	result = ""
@@ -666,6 +679,7 @@ func yeti_query(gen *yeti_server_generator, iana_query *dns.Msg, iana_resp *dns.
 	result := ""
 	for _, ip := range gen.next() {
 		server := "[" + ip.String() + "]:53"
+		result += log.Prefix()
 		result += fmt.Sprintf("Sending query '%s' %s to %s\n",
 			iana_query.Question[0].Name,
 			dns.TypeToString[iana_query.Question[0].Qtype],
