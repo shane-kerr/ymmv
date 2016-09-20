@@ -18,7 +18,7 @@ func TestRandUint16(t *testing.T) {
 
 type NetworkAddr struct {
 	Network string
-	Addr string
+	Addr    string
 }
 
 type DnsMessageRead struct {
@@ -26,14 +26,14 @@ type DnsMessageRead struct {
 	UdpInfo *net.UDPConn
 	SrcAddr net.Addr
 	TcpInfo *net.TCPConn
-	Error error
+	Error   error
 }
 
 type DnsServer struct {
-	Addrs []NetworkAddr
+	Addrs        []NetworkAddr
 	TCPListeners []*net.TCPListener
-	UDPConns []*net.UDPConn
-	MsgReader chan *DnsMessageRead
+	UDPConns     []*net.UDPConn
+	MsgReader    chan *DnsMessageRead
 }
 
 func DnsMessageReadUDP(conn *net.UDPConn, msg_chan chan<- *DnsMessageRead) {
@@ -125,7 +125,7 @@ func DnsMessageListenTCP(listener *net.TCPListener, msg_chan chan<- *DnsMessageR
 		conn, err := listener.AcceptTCP()
 		if err != nil {
 			// close up shop
-			for _, conn := range(conns) {
+			for _, conn := range conns {
 				conn.Close()
 			}
 			break
@@ -143,8 +143,8 @@ func InitDnsServer(hostports []string) (server *DnsServer, err error) {
 	addrs := make([]NetworkAddr, 0, 0)
 	tcp_listeners := make([]*net.TCPListener, 0, 0)
 	udp_conns := make([]*net.UDPConn, 0, 0)
-	msg_chan := make(chan *DnsMessageRead, len(hostports) * 4)
-	for _, hostport := range(hostports) {
+	msg_chan := make(chan *DnsMessageRead, len(hostports)*4)
+	for _, hostport := range hostports {
 		// if no port is specified, default to port 53
 		if !strings.ContainsRune(hostport, ':') {
 			hostport = hostport + ":53"
@@ -185,18 +185,17 @@ func InitDnsServer(hostports []string) (server *DnsServer, err error) {
 	return server, nil
 
 cleanup_error:
-	for _, listener := range(tcp_listeners) {
+	for _, listener := range tcp_listeners {
 		listener.Close()
 	}
-	for _, conn := range(udp_conns) {
+	for _, conn := range udp_conns {
 		conn.Close()
 	}
 	return nil, err
 }
 
 func (srv *DnsServer) Answer(answers []*dns.Msg) {
-	for _, answer := range(answers) {
-		fmt.Printf("%s\n", answer)
+	for _, answer := range answers {
 		msg_read := <-srv.MsgReader
 		if msg_read.Error != nil {
 			fmt.Printf("Error reading DNS message: %s", msg_read.Error)
@@ -222,7 +221,7 @@ func (srv *DnsServer) Answer(answers []*dns.Msg) {
 func SetupDnsServer() (server *DnsServer, err error) {
 	server = nil
 	for n := 0; (server == nil) && (n < 10); n++ {
-		server, err = InitDnsServer([]string{"[::1]:0",})
+		server, err = InitDnsServer([]string{"[::1]:0"})
 		if server != nil {
 			break
 		}
@@ -231,34 +230,65 @@ func SetupDnsServer() (server *DnsServer, err error) {
 	return server, err
 }
 
+func DnsMsgEqual(a *dns.Msg, b *dns.Msg) bool {
+	result := true
+	if a.MsgHdr != b.MsgHdr {
+		result = false
+	}
+	if len(a.Question) == len(b.Question) {
+		for n := range a.Question {
+			if a.Question[n] != b.Question[n] {
+				result = false
+			}
+		}
+	} else {
+		result = false
+	}
+	if len(a.Answer) == len(b.Answer) {
+		for n := range a.Answer {
+			if a.Answer[n] != b.Answer[n] {
+				result = false
+			}
+		}
+	} else {
+		result = false
+	}
+	if len(a.Ns) == len(b.Ns) {
+		for n := range a.Ns {
+			if a.Ns[n] != b.Ns[n] {
+				result = false
+			}
+		}
+	} else {
+		result = false
+	}
+	if len(a.Extra) == len(b.Extra) {
+		for n := range a.Extra {
+			if a.Extra[n] != b.Extra[n] {
+				result = false
+			}
+		}
+	} else {
+		result = false
+	}
+	return result
+}
 
 func TestDnsQuery(t *testing.T) {
-	server, err := InitDnsServer([]string{"[::1]:0",})
+	server, err := InitDnsServer([]string{"[::1]:0"})
 	if err != nil {
 		t.Fatalf("Error initializing DNS server: %s", err)
 	}
-	fmt.Printf("%s\n", server.Addrs)
-	var msg dns.Msg
-	msg.SetQuestion("hostname.bind.", dns.TypeTXT)
-	msg.Question[0].Qclass = dns.ClassCHAOS
-	server.Answer([]*dns.Msg{&msg,})
-/*
-	var msg dns.Msg
-	msg.SetQuestion("hostname.bind", dns.TypeTXT)
-	msg.Question[0].Qclass = dns.ClassCHAOS
-	var info server_info
-	server := dns.Server{Addr: "[::1]:0", Net: "udp", Handler: &info}
-	go server.ListenAndServe()
-	// busy-loop waiting for server to start
-	server.lock.Lock()
-	for !server.started {
-		server.lock.Unlock()
-		server.lock.Lock()
+	var question dns.Msg
+	question.SetQuestion("hostname.bind.", dns.TypeTXT)
+	question.Question[0].Qclass = dns.ClassCHAOS
+	expected_answer := question.Copy()
+	go server.Answer([]*dns.Msg{expected_answer})
+	answer, _, err := DnsQuery(server.Addrs[0].Addr, &question)
+	if err != nil {
+		t.Fatalf("Error querying DNS server: %s", err)
 	}
-//	defer server.lock.Unlock()
-//	port := server.Listener
-//	DnsQuery("::1", 
-	server.Shutdown()
-	*/
+	if !DnsMsgEqual(answer, expected_answer) {
+		t.Fatalf("Answer not expected answer:\n%s\n%s\n", answer, expected_answer)
+	}
 }
-
