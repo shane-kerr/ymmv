@@ -1,35 +1,35 @@
 package dnsstub
 
 import (
-	"math/big"
 	"crypto/rand"
 	"fmt"
+	"github.com/miekg/dns"
+	"math/big"
 	"net"
 	"strings"
 	"time"
-	"github.com/miekg/dns"
 )
 
 type query struct {
-	handle	int		// identifier to match answer with question
-	qname	string
-	rtype	uint16
+	handle int // identifier to match answer with question
+	qname  string
+	rtype  uint16
 }
 
 type answer struct {
-	handle	int		// identifier to match answer with question
-	qname	string
-	rtype	uint16
-	answer	*dns.Msg
-	rtt	time.Duration
-	err	error
+	handle int // identifier to match answer with question
+	qname  string
+	rtype  uint16
+	answer *dns.Msg
+	rtt    time.Duration
+	err    error
 }
 
 type StubResolver struct {
-	next_handle		int
-	queries			chan *query
-	answers			chan *answer
-	finished_answers	[]*answer
+	next_handle      int
+	queries          chan *query
+	answers          chan *answer
+	finished_answers []*answer
 }
 
 func RandUint16() (uint16, error) {
@@ -44,7 +44,7 @@ func RandUint16() (uint16, error) {
 
 /*
    Send a query to a DNS server, retrying and handling truncation.
- */
+*/
 func DnsQuery(server string, query *dns.Msg) (*dns.Msg, time.Duration, error) {
 	// try to query first in UDP
 	dnsClient := new(dns.Client)
@@ -111,8 +111,8 @@ func Init(concurrency int, server_ips []net.IP) (resolver *StubResolver, err err
 		}
 		servers = resolv_conf.Servers
 	}
-	stub.queries = make(chan *query, concurrency * 4)
-	stub.answers = make(chan *answer, concurrency * 2)
+	stub.queries = make(chan *query, concurrency*4)
+	stub.answers = make(chan *answer, concurrency*2)
 	for i := 0; i < concurrency; i++ {
 		go stub_resolve(servers, stub.queries, stub.answers)
 	}
@@ -135,7 +135,7 @@ func (resolver *StubResolver) Wait() (*dns.Msg, time.Duration, string, uint16, e
 	if len(resolver.finished_answers) > 0 {
 		a = resolver.finished_answers[0]
 		resolver.finished_answers = resolver.finished_answers[1:]
-	// otherwise wait for an answer to arrive
+		// otherwise wait for an answer to arrive
 	} else {
 		a = <-resolver.answers
 	}
