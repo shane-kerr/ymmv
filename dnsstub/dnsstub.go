@@ -53,14 +53,27 @@ func DnsQuery(server string, query *dns.Msg) (*dns.Msg, time.Duration, error) {
 		return nil, 0, err
 	}
 	query.Id = id
-	r, rtt, err := dnsClient.Exchange(query, server)
-	if (err != nil) && (err != dns.ErrTruncated) {
-		return nil, 0, err
+	var r *dns.Msg
+	var rtt time.Duration
+	// try a few times with UDP
+	for i := 0; i < 3; i++ {
+		r, rtt, err = dnsClient.Exchange(query, server)
+		if err != nil {
+			if err == dns.ErrTruncated {
+				break
+			}
+			if !err.(net.Error).Timeout() {
+				return nil, 0, err
+			}
+		}
+		if (r != nil) && (r.Rcode == dns.RcodeSuccess) {
+			if r.Truncated {
+				break
+			}
+			return r, rtt, nil
+		}
 	}
-	if (r.Rcode == dns.RcodeSuccess) && !r.Truncated {
-		return r, rtt, nil
-	}
-	// if this didn't work, try again in TCP
+	// if we got a truncation or timeouts, try again in TCP
 	dnsClient.Net = "tcp"
 	r, rtt, err = dnsClient.Exchange(query, server)
 	if err != nil {

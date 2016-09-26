@@ -18,6 +18,13 @@ import (
 	"time"
 )
 
+// starting point to find Yeti root servers
+var yeti_root_hints = []string{
+	"bii.dns-lab.net.",
+	"yeti-ns.wide.ad.jp.",
+	"yeti-ns.tisf.net.",
+}
+
 type ymmv_message struct {
 	ip_family   byte
 	ip_protocol byte
@@ -206,24 +213,41 @@ func read_next_message() (y *ymmv_message, err error) {
 	return &result, nil
 }
 
-func lookup_yeti_servers() []net.IP {
-	// get the list of root servers from a known Yeti root server
+// get the list of root servers from a known Yeti root server
+func lookup_yeti_servers(hints []string) []net.IP {
 	root_client := new(dns.Client)
 	root_client.Net = "tcp"
 	ns_query := new(dns.Msg)
 	ns_query.SetQuestion(".", dns.TypeNS)
 	ns_query.RecursionDesired = true
-	// TODO: avoid hard-coding a particular root server here
-	ns_response, _, err := dnsstub.DnsQuery("yeti-ns.wide.ad.jp.:53", ns_query)
-	if err != nil {
-		log.Fatalf("Error looking up Yeti root server NS; %s", err)
+
+	// Try each of our servers listed in our hints until one works.
+	// Use the rand.Perm() function so we try them in a random order.
+	var ns_response *dns.Msg
+	for _, n := range rand.Perm(len(hints)) {
+		root := hints[n]
+		if !strings.ContainsRune(root, ':') {
+			root = root + ":53"
+		}
+		var err error
+		ns_response, _, err = dnsstub.DnsQuery(root, ns_query)
+		if err != nil {
+			log.Printf("Error looking up Yeti root server NS from %s; %s", root, err)
+		}
+		if ns_response != nil {
+			break
+		}
+	}
+	if ns_response == nil {
+		log.Fatalf("Unable to get NS from any Yeti root server")
 	}
 
-	// lookup the addresses of some of our Yeti servers
-	resolver, err := dnsstub.Init(16, nil)
+	// lookup the IPv6 addresses of the name servers in the NS RRset
+	resolver, err := dnsstub.Init(4, nil)
 	if err != nil {
 		log.Fatalf("Error setting up DNS stub resolver: %s\n", err)
 	}
+	defer resolver.Close()
 	for _, root_server := range ns_response.Answer {
 		switch root_server.(type) {
 		case *dns.NS:
@@ -231,13 +255,14 @@ func lookup_yeti_servers() []net.IP {
 			resolver.Query(ns, dns.TypeAAAA)
 		}
 	}
-	ips := make([]net.IP, 0, 1)
-	for n := range ns_response.Answer {
-		fmt.Printf("\rLooking up Yeti root servers [%d/%d]",
-			n, len(ns_response.Answer))
+	ips := make([]net.IP, 0, len(ns_response.Answer))
+	for _ = range ns_response.Answer {
+		//	for n := range ns_response.Answer {
+		//		fmt.Printf("\rLooking up Yeti root servers [%d/%d]",
+		//			n, len(ns_response.Answer))
 		answer, _, qname, _, err := resolver.Wait()
 		if err != nil {
-			fmt.Printf("\nError looking up %s: %s\n", qname, err)
+			log.Printf("Error looking up %s: %s\n", qname, err)
 		}
 		if answer != nil {
 			for _, root_address := range answer.Answer {
@@ -249,9 +274,8 @@ func lookup_yeti_servers() []net.IP {
 			}
 		}
 	}
-	fmt.Printf("\rLooking up Yeti root servers [%d/%d]\n",
-		len(ns_response.Answer), len(ns_response.Answer))
-	resolver.Close()
+	//	fmt.Printf("\rLooking up Yeti root servers [%d/%d]\n",
+	//		len(ns_response.Answer), len(ns_response.Answer))
 
 	return ips
 }
@@ -269,7 +293,7 @@ func init_yeti_server_set(algorithm string, ips []net.IP) (srvs *yeti_server_set
 	srvs = new(yeti_server_set)
 	srvs.algorithm = algorithm
 	if len(ips) == 0 {
-		srvs.ips = lookup_yeti_servers()
+		srvs.ips = lookup_yeti_servers(yeti_root_hints)
 	} else {
 		srvs.ips = ips
 	}
@@ -518,18 +542,18 @@ func compare_soa(iana_soa *dns.SOA, yeti_soa *dns.SOA) (result string) {
 		return fmt.Sprintf("SOA only for IANA: %s\n", iana_soa)
 	}
 
-/*
-	if iana_soa.Ns != yeti_soa.Ns {
-		result += fmt.Sprintf("IANA SOA primary master: %s, Yeti SOA primary master: %s\n",
-			iana_soa.Ns, yeti_soa.Ns)
-	}
-*/
-/*
-	if iana_soa.Mbox != yeti_soa.Mbox {
-		result += fmt.Sprintf("IANA SOA email: %s, Yeti SOA email: %s\n",
-			iana_soa.Mbox, yeti_soa.Mbox)
-	}
-*/
+	/*
+		if iana_soa.Ns != yeti_soa.Ns {
+			result += fmt.Sprintf("IANA SOA primary master: %s, Yeti SOA primary master: %s\n",
+				iana_soa.Ns, yeti_soa.Ns)
+		}
+	*/
+	/*
+		if iana_soa.Mbox != yeti_soa.Mbox {
+			result += fmt.Sprintf("IANA SOA email: %s, Yeti SOA email: %s\n",
+				iana_soa.Mbox, yeti_soa.Mbox)
+		}
+	*/
 	if iana_soa.Serial != yeti_soa.Serial {
 		result += fmt.Sprintf("IANA SOA serial: %d, Yeti SOA serial: %d\n",
 			iana_soa.Serial, yeti_soa.Serial)
@@ -595,14 +619,14 @@ func compare_resp(iana *dns.Msg, yeti *dns.Msg) (result string) {
 			iana.AuthenticatedData, yeti.AuthenticatedData)
 		equivalent = false
 	}
-// XXX: temporarily disabled
-/*
-	if iana.CheckingDisabled != yeti.CheckingDisabled {
-		result += fmt.Sprintf("Checking disabled flag mismatch: IANA %t vs Yeti %t\n",
-			iana.CheckingDisabled, yeti.CheckingDisabled)
-		equivalent = false
-	}
-*/
+	// XXX: temporarily disabled
+	/*
+		if iana.CheckingDisabled != yeti.CheckingDisabled {
+			result += fmt.Sprintf("Checking disabled flag mismatch: IANA %t vs Yeti %t\n",
+				iana.CheckingDisabled, yeti.CheckingDisabled)
+			equivalent = false
+		}
+	*/
 	if iana.Rcode != yeti.Rcode {
 		result += fmt.Sprintf("Rcode mismatch: IANA %s vs Yeti %s\n",
 			dns.RcodeToString[iana.Rcode],
@@ -720,8 +744,7 @@ func main() {
 			ip := net.ParseIP(server)
 			// TODO: allow host name here
 			if ip == nil {
-				log.Fatalf("Unrecognized IP address '%s'\n",
-					server)
+				log.Fatalf("Unrecognized IP address '%s'\n", server)
 			}
 			ips = append(ips, ip)
 		}

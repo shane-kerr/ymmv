@@ -4,10 +4,10 @@ import "testing"
 
 func TestPadRight(t *testing.T) {
 	cases := []struct {
-		s string
+		s      string
 		length int
-		pad string
-		want string
+		pad    string
+		want   string
 	}{
 		// empty case
 		{"", 0, "", ""},
@@ -26,8 +26,7 @@ func TestPadRight(t *testing.T) {
 		got := PadRight(c.s, c.length, c.pad)
 		if got != c.want {
 			t.Errorf("PadRight(%q, %d, %q) == %q, want %q",
-			         c.s, c.length, c.pad, got, c.want)
+				c.s, c.length, c.pad, got, c.want)
 		}
 	}
 }
-
