@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"net"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -26,9 +27,10 @@ type answer struct {
 }
 
 type StubResolver struct {
+	lock             sync.Mutex
+	cond             *sync.Cond
 	next_handle      int
 	queries          chan *query
-	answers          chan *answer
 	finished_answers []*answer
 }
 
@@ -83,8 +85,8 @@ func DnsQuery(server string, query *dns.Msg) (*dns.Msg, time.Duration, error) {
 	return r, rtt, nil
 }
 
-func stub_resolve(servers []string, queries <-chan *query, answers chan<- *answer) {
-	for q := range queries {
+func stub_resolve(resolver *StubResolver, servers []string) {
+	for q := range resolver.queries {
 		dns_query := new(dns.Msg)
 		dns_query.RecursionDesired = true
 		dns_query.SetQuestion(q.qname, q.rtype)
@@ -106,13 +108,16 @@ func stub_resolve(servers []string, queries <-chan *query, answers chan<- *answe
 				break
 			}
 		}
-		answers <- a
+		resolver.lock.Lock()
+		resolver.finished_answers = append(resolver.finished_answers, a)
+		resolver.cond.Broadcast()
+		resolver.lock.Unlock()
 	}
 }
 
 func Init(concurrency int, server_ips []net.IP) (resolver *StubResolver, err error) {
 	stub := new(StubResolver)
-	servers := make([]string, 0, 0)
+	var servers []string
 	for _, ip := range server_ips {
 		servers = append(servers, ip.String())
 	}
@@ -125,17 +130,19 @@ func Init(concurrency int, server_ips []net.IP) (resolver *StubResolver, err err
 		servers = resolv_conf.Servers
 	}
 	stub.queries = make(chan *query, concurrency*4)
-	stub.answers = make(chan *answer, concurrency*2)
 	for i := 0; i < concurrency; i++ {
-		go stub_resolve(servers, stub.queries, stub.answers)
+		go stub_resolve(stub, servers)
 	}
+	stub.cond = sync.NewCond(&stub.lock)
 	return stub, nil
 }
 
-func (resolver *StubResolver) Query(qname string, rtype uint16) (handle int) {
+func (resolver *StubResolver) AsyncQuery(qname string, rtype uint16) (handle int) {
 	q := new(query)
+	resolver.lock.Lock()
 	resolver.next_handle += 1
 	q.handle = resolver.next_handle
+	resolver.lock.Unlock()
 	q.qname = qname
 	q.rtype = rtype
 	resolver.queries <- q
@@ -143,56 +150,45 @@ func (resolver *StubResolver) Query(qname string, rtype uint16) (handle int) {
 }
 
 func (resolver *StubResolver) Wait() (*dns.Msg, time.Duration, string, uint16, error) {
-	var a *answer
-	// if we have waiting finished answers, return one of them
-	if len(resolver.finished_answers) > 0 {
-		a = resolver.finished_answers[0]
-		resolver.finished_answers = resolver.finished_answers[1:]
-		// otherwise wait for an answer to arrive
-	} else {
-		a = <-resolver.answers
+	resolver.lock.Lock()
+	defer resolver.lock.Unlock()
+
+	for len(resolver.finished_answers) == 0 {
+		resolver.cond.Wait()
 	}
+
+	a := resolver.finished_answers[0]
+	resolver.finished_answers = resolver.finished_answers[1:]
 	return a.answer, a.rtt, a.qname, a.rtype, a.err
 }
 
+// Wait for a specific handle.
+// Note that mixing Wait() and WaitByHandle() is dangerous because
+// a Wait() may read a result before the WaitByHandle() gets it, so
+// it may wait forever.
 func (resolver *StubResolver) WaitByHandle(handle int) (*dns.Msg, time.Duration, string, uint16, error) {
-	// check any existing finished answers to see if we have ours
-	for n, a := range resolver.finished_answers {
-		if a.handle == handle {
-			resolver.finished_answers = append(resolver.finished_answers[:n],
-				resolver.finished_answers[n+1:]...)
-			return a.answer, a.rtt, a.qname, a.rtype, a.err
-		}
-	}
+
+	resolver.lock.Lock()
+	defer resolver.lock.Unlock()
+
 	for {
-		a := <-resolver.answers
-		if a.handle == handle {
-			return a.answer, a.rtt, a.qname, a.rtype, a.err
+		for n, a := range resolver.finished_answers {
+			if a.handle == handle {
+				resolver.finished_answers = append(resolver.finished_answers[:n],
+					resolver.finished_answers[n+1:]...)
+				return a.answer, a.rtt, a.qname, a.rtype, a.err
+			}
 		}
-		resolver.finished_answers = append(resolver.finished_answers, a)
+		resolver.cond.Wait()
 	}
+}
+
+func (resolver *StubResolver) SyncQuery(qname string, rtype uint16) (*dns.Msg, time.Duration, error) {
+	handle := resolver.AsyncQuery(qname, rtype)
+	answer, rtt, _, _, err := resolver.WaitByHandle(handle)
+	return answer, rtt, err
 }
 
 func (resolver *StubResolver) Close() {
 	close(resolver.queries)
-	close(resolver.answers)
 }
-
-/*
-func main() {
-	resolver, err := Init(11, nil)
-	if err != nil {
-		fmt.Printf("Error! %s\n", err)
-		return
-	}
-	resolver.Query("isc.org.", dns.TypeA)
-	sleep_time, _ := time.ParseDuration("1s")
-	time.Sleep(sleep_time)	// insure that our non-handle query finishes first
-	handle := resolver.Query("isc.org.", dns.TypeAAAA)
-	answer, _, _, err := resolver.WaitByHandle(handle)
-	fmt.Printf("answer: %s\n", answer)
-	answer, _, _, err = resolver.Wait()
-	fmt.Printf("answer: %s\n", answer)
-	resolver.Close()
-}
-*/
