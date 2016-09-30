@@ -15,14 +15,45 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
+
+// debug output
+type debug_flag bool
+
+var dbg debug_flag = true
+var dbg_log *log.Logger = log.New(os.Stderr, "DEBUG ", log.Lmicroseconds|log.LUTC)
+
+func (dbg debug_flag) Printf(format string, args ...interface{}) {
+	if dbg {
+		dbg_log.Printf(format, args...)
+	}
+}
 
 // starting point to find Yeti root servers
 var yeti_root_hints = []string{
 	"bii.dns-lab.net.",
 	"yeti-ns.wide.ad.jp.",
 	"yeti-ns.tisf.net.",
+}
+
+// maximum TTL to use
+const MAX_TTL = 30
+
+//const MAX_TTL = 300
+//const MAX_TTL = 86400
+
+// convert a TTL into a bounded duration
+func use_ttl(ttl uint32) time.Duration {
+	if ttl < 1 {
+		ttl = 1
+	} else if ttl > MAX_TTL {
+		ttl = MAX_TTL
+	}
+	// TODO: use normal distribution
+	result := time.Second * time.Duration(ttl) * 3 / 4
+	return result
 }
 
 type ymmv_message struct {
@@ -213,10 +244,8 @@ func read_next_message() (y *ymmv_message, err error) {
 	return &result, nil
 }
 
-// get the list of root servers from a known Yeti root server
-func lookup_yeti_servers(hints []string) []net.IP {
-	root_client := new(dns.Client)
-	root_client.Net = "tcp"
+// does a lookup and gets the root NS RRset
+func get_root_ns(hints []string) (ns_names []string, ns_ttl uint32) {
 	ns_query := new(dns.Msg)
 	ns_query.SetQuestion(".", dns.TypeNS)
 	ns_query.RecursionDesired = true
@@ -242,78 +271,245 @@ func lookup_yeti_servers(hints []string) []net.IP {
 		log.Fatalf("Unable to get NS from any Yeti root server")
 	}
 
-	// lookup the IPv6 addresses of the name servers in the NS RRset
-	resolver, err := dnsstub.Init(4, nil)
-	if err != nil {
-		log.Fatalf("Error setting up DNS stub resolver: %s\n", err)
-	}
-	defer resolver.Close()
+	// extract out the names from the NS RRset, and also save the TTL
 	for _, root_server := range ns_response.Answer {
 		switch root_server.(type) {
 		case *dns.NS:
-			ns := root_server.(*dns.NS).Ns
-			resolver.Query(ns, dns.TypeAAAA)
+			ns_names = append(ns_names, root_server.(*dns.NS).Ns)
+			ns_ttl = root_server.Header().Ttl
 		}
 	}
-	ips := make([]net.IP, 0, len(ns_response.Answer))
-	for _ = range ns_response.Answer {
-		//	for n := range ns_response.Answer {
-		//		fmt.Printf("\rLooking up Yeti root servers [%d/%d]",
-		//			n, len(ns_response.Answer))
-		answer, _, qname, _, err := resolver.Wait()
+	if len(ns_names) == 0 {
+		log.Fatalf("No NS found for Yeti root")
+	}
+
+	return ns_names, ns_ttl
+}
+
+// Note that on error we don't use this name server until we can find out
+// the IP address for it. In theory we could use the name server until the
+// TTL for the address expires, but rather than track that we just
+// temporarily stop using it.
+func refresh_aaaa(ns *ns_info) {
+	dbg.Printf("refreshing %s", ns.name)
+
+	var new_ip []net.IP
+	var this_ttl uint32
+
+	answer, _, err := ns.srvs.resolver.SyncQuery(ns.name, dns.TypeAAAA)
+	if err != nil {
+		log.Printf("Error looking up %s: %s\n", ns.name, err)
+	}
+
+	if answer != nil {
+		for _, root_address := range answer.Answer {
+			switch root_address.(type) {
+			case *dns.AAAA:
+				aaaa := root_address.(*dns.AAAA).AAAA
+				dbg.Printf("AAAA for %s = %s", ns.name, aaaa)
+				new_ip = append(new_ip, aaaa)
+				this_ttl = root_address.Header().Ttl
+			}
+		}
+	}
+
+	if len(new_ip) == 0 {
+		log.Printf("No AAAA for %s, checking again in 300 seconds", ns.name)
+		this_ttl = 400 // use_ttl uses 75% of TTL, so this gives us 300 seconds
+	}
+
+	ns.srvs.lock.Lock()
+	ns.ip = new_ip
+	refresh_func := func() { refresh_aaaa(ns) }
+	ns.timer = time.AfterFunc(use_ttl(this_ttl), refresh_func)
+	ns.srvs.lock.Unlock()
+}
+
+// information about each Yeti name server
+type ns_info struct {
+	// name of the name server, like "bii.dns-lab.net" (may be "")
+	name string
+
+	// IP addresses of the name server
+	ip []net.IP
+
+	// round-trip time (RTT) of last lookup, or 0 if none
+	last_rtt time.Duration
+
+	// time when last lookup happened, or nil if no lookup has yet occurred
+	last_lookup *time.Time
+
+	// timer for seeing if the IP address changed (may be nil)
+	timer *time.Timer
+
+	// server set we belong to
+	srvs *yeti_server_set
+}
+
+type yeti_server_set struct {
+	// prevent use of data during modification
+	lock sync.Mutex
+
+	// timer for refreshing the root zone NS RRset
+	root_ns_timer *time.Timer
+
+	// information about each IP address
+	ns []*ns_info
+
+	// algorithm used to pick server
+	algorithm string
+
+	// next server to use (for round-robin)
+	next_server int
+	next_ip     int
+
+	// resolver for lookups
+	resolver *dnsstub.StubResolver
+}
+
+// get the list of root servers from known Yeti root servers
+func yeti_priming(srvs *yeti_server_set) {
+	// get the names from the NS RRset
+	dbg.Printf("getting root NS RRset")
+	ns_names, _ := get_root_ns(yeti_root_hints)
+
+	// lookup the IPv6 addresses of the name servers in the NS RRset
+	for _, ns_name := range ns_names {
+		dbg.Printf("querying %s", ns_name)
+		srvs.resolver.AsyncQuery(ns_name, dns.TypeAAAA)
+	}
+
+	for _ = range ns_names {
+		answer, _, qname, _, err := srvs.resolver.Wait()
 		if err != nil {
 			log.Printf("Error looking up %s: %s\n", qname, err)
+			continue
 		}
+		this_ns := &ns_info{name: qname, srvs: srvs}
+		var this_ttl uint32
 		if answer != nil {
 			for _, root_address := range answer.Answer {
 				switch root_address.(type) {
 				case *dns.AAAA:
 					aaaa := root_address.(*dns.AAAA).AAAA
-					ips = append(ips, aaaa)
+					this_ns.ip = append(this_ns.ip, aaaa)
+					dbg.Printf("AAAA for %s = %s", qname, aaaa)
+					this_ttl = root_address.Header().Ttl
 				}
 			}
 		}
+
+		if len(this_ns.ip) == 0 {
+			log.Printf("No AAAA for %s, checking again in 300 seconds", qname)
+			this_ttl = 400 // use_ttl uses 75% of TTL, so this gives us 300 seconds
+		}
+
+		srvs.ns = append(srvs.ns, this_ns)
+
+		refresh_func := func() { refresh_aaaa(this_ns) }
+		this_ns.timer = time.AfterFunc(use_ttl(this_ttl), refresh_func)
 	}
-	//	fmt.Printf("\rLooking up Yeti root servers [%d/%d]\n",
-	//		len(ns_response.Answer), len(ns_response.Answer))
 
-	return ips
+	// set timer to refresh our NS RRset
+	//    srvs.ns_timer = time.AfterFunc(ttl2duration(srvs.ns_ttl), func () { refresh_ns_rrset(srvs) })
 }
 
-type yeti_server_set struct {
-	algorithm     string
-	ips           []net.IP
-	rtt_durations []time.Duration
-	rtt_times     []time.Time
-	next_server   int
-}
-
-func init_yeti_server_set(algorithm string, ips []net.IP) (srvs *yeti_server_set) {
-	// TODO: check algorithm is "round-robin", "random", "all", or "rtt"
+func init_yeti_server_set(ips []net.IP) (srvs *yeti_server_set) {
 	srvs = new(yeti_server_set)
-	srvs.algorithm = algorithm
+
+	srvs.lock.Lock()
+	defer srvs.lock.Unlock()
+
 	if len(ips) == 0 {
-		srvs.ips = lookup_yeti_servers(yeti_root_hints)
+		dbg.Printf("no IP's passed, performing Yeti priming\n")
+		var err error
+		srvs.resolver, err = dnsstub.Init(4, nil)
+		if err != nil {
+			log.Fatalf("Error setting up DNS stub resolver: %s\n", err)
+		}
+		yeti_priming(srvs)
+		dbg.Printf("priming done\n")
 	} else {
-		srvs.ips = ips
+		srvs.ns = append(srvs.ns, &ns_info{ip: ips})
 	}
-	// TODO: sort ips
-	srvs.rtt_durations = make([]time.Duration, len(srvs.ips), len(srvs.ips))
-	srvs.rtt_times = make([]time.Time, len(srvs.ips), len(srvs.ips))
+	srvs.algorithm = "round-robin"
 	srvs.next_server = 0
+	srvs.next_ip = 0
+
 	return srvs
 }
 
+/*
+func refresh_ns_rrset(srvs *yeti_server_set) {
+    log.Printf("refreshing NS RRset")
+
+    // make sure we are the only ones with access
+    srvs.lock.Lock()
+    defer srvs.lock.Unlock()
+
+    // get our new NS RRset
+    new_ns_rrset, srvs.ns_ttl := get_root_ns_rrset(yeti_root_hints)
+
+    // find removed NS
+    for ofs, old_ns := range srvs.ns_rrset {
+        found := false
+        for _, new_ns := range new_ns_rrset {
+            if old_ns == new_ns {
+                found = true
+                break
+            }
+        }
+        if !found {
+            // TODO: cancel timer
+        }
+    }
+
+    // find added NS
+    for _, new_ns := range new_ns_rrset {
+        found := false
+        for _, old_ns := range srvs.ns_rrset {
+            if old_ns == new_ns {
+                found = true
+                break
+            }
+        }
+        if !found {
+            // TODO: cancel timer
+        }
+    }
+
+    // refresh again later
+    srvs.ns_timer = time.AfterFunc(ttl2duration(srvs.ns_ttl), func () { refresh_ns_rrset(srvs) })
+}
+*/
+
+// Get the next set of IP addresses to query.
+// For most algorithms this is a single address, but it may be more (for "all").
 func (srvs *yeti_server_set) next() (ips []net.IP) {
-	ips = make([]net.IP, 0, 0)
+	srvs.lock.Lock()
+	defer srvs.lock.Unlock()
+
 	if srvs.algorithm == "round-robin" {
-		ips = append(ips, srvs.ips[srvs.next_server])
-		srvs.next_server = (srvs.next_server + 1) % len(srvs.ips)
-	} else if srvs.algorithm == "all" {
-		ips = srvs.ips
-	} else if srvs.algorithm == "random" {
-		// XXX: should seed the random number generator
-		ips = append(ips, srvs.ips[rand.Intn(len(srvs.ips))])
+		for srvs.next_ip >= len(srvs.ns[srvs.next_server].ip) {
+			srvs.next_server = (srvs.next_server + 1) % len(srvs.ns)
+			srvs.next_ip = 0
+		}
+		ips = append(ips, srvs.ns[srvs.next_server].ip[srvs.next_ip])
+		srvs.next_ip = srvs.next_ip + 1
+	} else if srvs.algorithm == "rtt" {
+		log.Fatalf("rtt-based server selection unimplemented")
+	} else {
+		var all_ips []net.IP
+		for _, ns := range srvs.ns {
+			for _, ip := range ns.ip {
+				all_ips = append(all_ips, ip)
+			}
+		}
+		if srvs.algorithm == "all" {
+			ips = all_ips
+		} else if srvs.algorithm == "random" {
+			ips = append(ips, all_ips[rand.Intn(len(all_ips))])
+		}
 	}
 	return ips
 }
@@ -325,7 +521,8 @@ type yeti_server_generator struct {
 
 func init_yeti_server_generator(algorithm string, ips []net.IP) (gen *yeti_server_generator) {
 	gen = new(yeti_server_generator)
-	gen.servers = init_yeti_server_set(algorithm, ips)
+	gen.servers = init_yeti_server_set(ips)
+	gen.servers.algorithm = algorithm
 	gen.ips = make(chan []net.IP)
 	go func() {
 		for {
@@ -736,9 +933,10 @@ func message_reader(output chan *ymmv_message) {
 
 // Main function.
 // TODO: verbose/debug flags
+// XXX: should seed the random number generator
 func main() {
 	// parse any target IP specified on startup
-	ips := make([]net.IP, 0, 0)
+	var ips []net.IP
 	if len(os.Args) > 1 {
 		for _, server := range os.Args[1:] {
 			ip := net.ParseIP(server)
@@ -778,8 +976,6 @@ func main() {
 			fmt.Print(str)
 			query_count -= 1
 		}
-
-		// TODO: look up Yeti root servers periodically (re-priming)
 	}
 
 	// wait for any outstanding queries to finish before exiting
