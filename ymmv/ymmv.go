@@ -51,7 +51,7 @@ func use_ttl(ttl uint32) time.Duration {
 		ttl = MAX_TTL
 	}
 	// TODO: use normal distribution
-	result := time.Second * time.Duration(ttl) * 3 / 4
+	result := time.Second * time.Duration(ttl+1)
 	return result
 }
 
@@ -393,12 +393,14 @@ func refresh_aaaa(ns *ns_info, done chan int) {
 
 	if len(new_ip) == 0 {
 		log.Printf("No AAAA for %s, checking again in 300 seconds", ns.name)
-		this_ttl = 400 // use_ttl uses 75% of TTL, so this gives us 300 seconds
+		this_ttl = 300
 	}
 
 	ns.srvs.lock.Lock()
 	ns.ip = new_ip
-	ns.timer = time.AfterFunc(use_ttl(this_ttl), func() { refresh_aaaa(ns, nil) })
+	when := use_ttl(this_ttl)
+	dbg.Printf("scheduling refresh of AAAA for %s in %s\n", ns.name, when)
+	ns.timer = time.AfterFunc(when, func() { refresh_aaaa(ns, nil) })
 	ns.srvs.lock.Unlock()
 
 	done <- len(new_ip)
@@ -431,7 +433,9 @@ func yeti_priming(srvs *yeti_server_set) {
 	}
 
 	// set timer to refresh our NS RRset
-	srvs.root_ns_timer = time.AfterFunc(use_ttl(ns_ttl), func() { refresh_ns(srvs) })
+	when := use_ttl(ns_ttl)
+	dbg.Printf("scheduling refresh of NS in %s\n", when)
+	srvs.root_ns_timer = time.AfterFunc(when, func() { refresh_ns(srvs) })
 }
 
 func init_yeti_server_set(ips []net.IP) (srvs *yeti_server_set) {
