@@ -10,7 +10,7 @@ import (
 	"github.com/shane-kerr/ymmv/dnsstub"
 	"io"
 	"log"
-    "math/rand"
+	"math/rand"
 	"net"
 	"os"
 	"reflect"
@@ -596,29 +596,37 @@ func compare_resp(iana *dns.Msg, yeti *dns.Msg) (result string) {
    be set at startup, otherwise a random value is used.)
 */
 
-var obfuscate_seed []byte
+var obfuscate_secret []byte
 
 func obfuscate_query(qname_in string) (qname_out string) {
-	if obfuscate_seed == nil {
-		obfuscate_seed = make([]byte, 8, 8)
-		nread, err := rand.Read(obfuscate_seed)
+	// split into labels
+	labels := strings.FieldsFunc(qname_in, func(r rune) bool { return r == '.' })
+
+	// if we only have a TLD or root, then we need to leave the query alone
+	if len(labels) < 2 {
+		return strings.ToLower(strings.Join(labels, ".")) + "."
+	}
+
+	// check to see if we have an obfuscation secret, and populate if not
+	if obfuscate_secret == nil {
+		obfuscate_secret = make([]byte, 8, 8)
+		nread, err := rand.Read(obfuscate_secret)
 		if err != nil {
-			log.Fatalf("Error generating random obfuscation seed: %s", err)
+			log.Fatalf("Error generating random obfuscation secret: %s", err)
 		}
 		if nread != 8 {
-			log.Fatalf("Read %d bytes for random obfuscation seed, wanted 8", nread)
+			log.Fatalf("Read %d bytes for random obfuscation secret, wanted 8", nread)
 		}
 		hex_output := make([]byte, 16, 16)
-		hex.Encode(hex_output, obfuscate_seed)
-		dbg.Printf("generated random obfuscation seed %s", strings.ToUpper(string(hex_output)))
+		hex.Encode(hex_output, obfuscate_secret)
+		dbg.Printf("generated random obfuscation secret %s", strings.ToUpper(string(hex_output)))
 	}
-	labels := strings.FieldsFunc(qname_in, func(r rune) bool { return r == '.' })
-	hash_input := append(obfuscate_seed, []byte(strings.ToLower(qname_in))...)
+	hash_input := append(obfuscate_secret, []byte(strings.ToLower(strings.Join(labels, ".")))...)
 	hashed := sha256.Sum256(hash_input)
 	hashed_hex := make([]byte, 64, 64)
 	hex.Encode(hashed_hex, hashed[:])
 	qname_out = "ymmv." + string(hashed_hex[0:16]) + "."
-	qname_out += strings.Join(labels[len(labels)-1:len(labels)], ".") + "."
+	qname_out += strings.ToLower(strings.Join(labels[len(labels)-1:len(labels)], ".")) + "."
 
 	dbg.Printf("obfuscated %s to %s", qname_in, qname_out)
 	return qname_out
@@ -666,7 +674,7 @@ func message_reader(output chan *ymmv_message) {
 // Main function.
 // TODO: verbose/debug flags
 // TODO: turn obfuscation on/off
-// TODO: specify random seed for obfuscation
+// TODO: specify random secret for obfuscation
 func main() {
 	// parse any target IP specified on startup
 	var ips []net.IP
