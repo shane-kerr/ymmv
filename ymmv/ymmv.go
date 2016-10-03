@@ -10,6 +10,7 @@ import (
 	"github.com/shane-kerr/ymmv/dnsstub"
 	"io"
 	"log"
+    "math/rand"
 	"net"
 	"os"
 	"reflect"
