@@ -26,12 +26,9 @@ const MAX_TTL = 86400
 
 // convert a TTL into a bounded duration
 func use_ttl(ttl uint32) time.Duration {
-	if ttl < 1 {
-		ttl = 1
-	} else if ttl > MAX_TTL {
+	if ttl > MAX_TTL {
 		ttl = MAX_TTL
 	}
-	// TODO: use normal distribution
 	result := time.Second * time.Duration(ttl+1)
 	return result
 }
