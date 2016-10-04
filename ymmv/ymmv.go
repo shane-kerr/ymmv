@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"flag"
 	"fmt"
 	"github.com/miekg/dns"
 	"github.com/shane-kerr/ymmv/dnsstub"
@@ -632,10 +633,17 @@ func obfuscate_query(qname_in string) (qname_out string) {
 	return qname_out
 }
 
-func yeti_query(gen *yeti_server_generator, iana_query *dns.Msg, iana_resp *dns.Msg, output chan string) {
+func yeti_query(gen *yeti_server_generator, clear_names bool,
+	iana_query *dns.Msg, iana_resp *dns.Msg,
+	output chan string) {
 	result := ""
 	for _, ip := range gen.next() {
-		qname := obfuscate_query(iana_query.Question[0].Name)
+		var qname string
+		if clear_names {
+			qname = iana_query.Question[0].Name
+		} else {
+			qname = obfuscate_query(iana_query.Question[0].Name)
+		}
 		server := "[" + ip.String() + "]:53"
 		result += log.Prefix()
 		result += fmt.Sprintf("Sending query '%s' %s as '%s' to %s\n",
@@ -676,10 +684,12 @@ func message_reader(output chan *ymmv_message) {
 // TODO: turn obfuscation on/off
 // TODO: specify random secret for obfuscation
 func main() {
-	// parse any target IP specified on startup
+	clear_names := flag.Bool("c", false, "use non-obfuscated (clear) query names")
+	flag.Parse()
 	var ips []net.IP
-	if len(os.Args) > 1 {
-		for _, server := range os.Args[1:] {
+	args := flag.Args()
+	if len(args) > 1 {
+		for _, server := range args {
 			ip := net.ParseIP(server)
 			// TODO: allow host name here
 			if ip == nil {
@@ -710,7 +720,7 @@ func main() {
 			if y == nil {
 				break
 			}
-			go yeti_query(servers, y.query, y.answer, query_output)
+			go yeti_query(servers, *clear_names, y.query, y.answer, query_output)
 			query_count += 1
 		// comparison done
 		case str := <-query_output:
