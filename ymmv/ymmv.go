@@ -649,19 +649,20 @@ func yeti_query(gen *yeti_server_generator, clear_names bool, edns_size uint16,
 	iana_query *dns.Msg, iana_resp *dns.Msg,
 	output chan string) {
 	result := ""
-	for _, ip := range gen.next() {
+	for _, target := range gen.next() {
 		var qname string
 		if clear_names {
 			qname = iana_query.Question[0].Name
 		} else {
 			qname = obfuscate_query(iana_query.Question[0].Name)
 		}
-		server := "[" + ip.String() + "]:53"
+		server := "[" + target.ip_info.ip.String() + "]:53"
 		result += log.Prefix()
-		result += fmt.Sprintf("Sending query '%s' %s as '%s' to %s\n",
+		result += fmt.Sprintf("Sending query '%s' %s as '%s' to %s @ %s\n",
 			iana_query.Question[0].Name,
 			dns.TypeToString[iana_query.Question[0].Qtype],
 			qname,
+			target.ns_info.name,
 			server)
 		// convert to our obfuscated name
 		iana_query.Question[0].Name = qname

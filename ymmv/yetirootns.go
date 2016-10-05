@@ -33,19 +33,21 @@ func use_ttl(ttl uint32) time.Duration {
 	return result
 }
 
+// information about each IP address for each Yeti name server
+type ip_info struct {
+	// IP address
+	ip net.IP
+	// smoothed round-trip time (SRTT) for this IP address
+	srtt time.Duration
+}
+
 // information about each Yeti name server
 type ns_info struct {
 	// name of the name server, like "bii.dns-lab.net" (may be "")
 	name string
 
 	// IP addresses of the name server
-	ip []net.IP
-
-	// round-trip time (RTT) of last lookup, or 0 if none
-	last_rtt time.Duration
-
-	// time when last lookup happened, or nil if no lookup has yet occurred
-	last_lookup *time.Time
+	ip_info []ip_info
 
 	// timer for seeing if the IP address changed (may be nil)
 	timer *time.Timer
@@ -186,8 +188,26 @@ func refresh_aaaa(ns *ns_info, done chan int) {
 		this_ttl = 300
 	}
 
+	// make a set of IP information, copying old SRTT if present in the old set
+	var new_ip_info []ip_info
+	for _, ip := range new_ip {
+		found := false
+		for _, info := range ns.ip_info {
+			if ip.Equal(info.ip) {
+				dbg.Printf("%s: copying old IP information ip=%s, srtt=%s", ns.name, info.ip, info.srtt)
+				new_ip_info = append(new_ip_info, info)
+				found = true
+				break
+			}
+		}
+		if !found {
+			dbg.Printf("%s: adding new IP information ip=%s, srtt=0", ns.name, ip)
+			new_ip_info = append(new_ip_info, ip_info{ip: ip, srtt: 0})
+		}
+	}
+
 	ns.srvs.lock.Lock()
-	ns.ip = new_ip
+	ns.ip_info = new_ip_info
 	when := use_ttl(this_ttl)
 	dbg.Printf("scheduling refresh of AAAA for %s in %s\n", ns.name, when)
 	ns.timer = time.AfterFunc(when, func() { refresh_aaaa(ns, nil) })
@@ -241,7 +261,11 @@ func init_yeti_server_set(ips []net.IP) (srvs *yeti_server_set) {
 		yeti_priming(srvs)
 		dbg.Printf("priming done\n")
 	} else {
-		srvs.ns = append(srvs.ns, &ns_info{ip: ips})
+		var ns_ip_info []ip_info
+		for _, ip := range ips {
+			ns_ip_info = append(ns_ip_info, ip_info{ip: ip, srtt: 0})
+		}
+		srvs.ns = append(srvs.ns, &ns_info{ip_info: ns_ip_info})
 	}
 
 	srvs.algorithm = "round-robin"
@@ -251,55 +275,64 @@ func init_yeti_server_set(ips []net.IP) (srvs *yeti_server_set) {
 	return srvs
 }
 
+type query_target struct {
+	// information about IP to query
+	ip_info *ip_info
+	// server to update with SRTT information
+	ns_info *ns_info
+}
+
 // Get the next set of IP addresses to query.
 // For most algorithms this is a single address, but it may be more (for "all").
-func (srvs *yeti_server_set) next() (ips []net.IP) {
+func (srvs *yeti_server_set) next() (targets []query_target) {
 	srvs.lock.Lock()
 	defer srvs.lock.Unlock()
 
 	if srvs.algorithm == "round-robin" {
-		for srvs.next_ip >= len(srvs.ns[srvs.next_server].ip) {
+		for srvs.next_ip >= len(srvs.ns[srvs.next_server].ip_info) {
 			srvs.next_server = (srvs.next_server + 1) % len(srvs.ns)
 			srvs.next_ip = 0
 		}
-		ips = append(ips, srvs.ns[srvs.next_server].ip[srvs.next_ip])
+		ns := srvs.ns[srvs.next_server]
+		ip := &ns.ip_info[srvs.next_ip]
+		targets = append(targets, query_target{ip_info: ip, ns_info: ns})
 		srvs.next_ip = srvs.next_ip + 1
 	} else if srvs.algorithm == "rtt" {
 		log.Fatalf("rtt-based server selection unimplemented")
 	} else {
-		var all_ips []net.IP
+		var all_targets []query_target
 		for _, ns := range srvs.ns {
-			for _, ip := range ns.ip {
-				all_ips = append(all_ips, ip)
+			for _, ip := range ns.ip_info {
+				all_targets = append(all_targets, query_target{ip_info: &ip, ns_info: ns})
 			}
 		}
 		if srvs.algorithm == "all" {
-			ips = all_ips
+			targets = all_targets
 		} else if srvs.algorithm == "random" {
-			ips = append(ips, all_ips[rand.Intn(len(all_ips))])
+			targets = append(targets, all_targets[rand.Intn(len(all_targets))])
 		}
 	}
-	return ips
+	return targets
 }
 
 type yeti_server_generator struct {
 	servers *yeti_server_set
-	ips     chan []net.IP
+	targets chan []query_target
 }
 
 func init_yeti_server_generator(algorithm string, ips []net.IP) (gen *yeti_server_generator) {
 	gen = new(yeti_server_generator)
 	gen.servers = init_yeti_server_set(ips)
 	gen.servers.algorithm = algorithm
-	gen.ips = make(chan []net.IP)
+	gen.targets = make(chan []query_target)
 	go func() {
 		for {
-			gen.ips <- gen.servers.next()
+			gen.targets <- gen.servers.next()
 		}
 	}()
 	return gen
 }
 
-func (gen *yeti_server_generator) next() (ips []net.IP) {
-	return <-gen.ips
+func (gen *yeti_server_generator) next() (targets []query_target) {
+	return <-gen.targets
 }
