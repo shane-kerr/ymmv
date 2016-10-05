@@ -656,13 +656,13 @@ func yeti_query(gen *yeti_server_generator, clear_names bool, edns_size uint16,
 		} else {
 			qname = obfuscate_query(iana_query.Question[0].Name)
 		}
-		server := "[" + target.ip_info.ip.String() + "]:53"
+		server := "[" + target.ip.String() + "]:53"
 		result += log.Prefix()
 		result += fmt.Sprintf("Sending query '%s' %s as '%s' to %s @ %s\n",
 			iana_query.Question[0].Name,
 			dns.TypeToString[iana_query.Question[0].Qtype],
 			qname,
-			target.ns_info.name,
+			target.ns_name,
 			server)
 		// convert to our obfuscated name
 		iana_query.Question[0].Name = qname
@@ -670,13 +670,15 @@ func yeti_query(gen *yeti_server_generator, clear_names bool, edns_size uint16,
 		if edns_size != 0 {
 			SetOrChangeUDPSize(iana_query, edns_size)
 		}
-		//		yeti_resp, qtime, err := dnsstub.DnsQuery(server, iana_query)
-		yeti_resp, _, err := dnsstub.DnsQuery(server, iana_query)
+		// do the actual query
+		yeti_resp, rtt, err := dnsstub.DnsQuery(server, iana_query)
 		if err != nil {
 			result += fmt.Sprintf("Error querying Yeti root server; %s\n", err)
 		} else {
 			result += compare_resp(iana_resp, yeti_resp)
 		}
+		// update our smoothed round-trip time (SRTT)
+		gen.servers.update_srtt(target.ip, rtt)
 	}
 	output <- result
 }

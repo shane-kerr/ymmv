@@ -47,7 +47,7 @@ type ns_info struct {
 	name string
 
 	// IP addresses of the name server
-	ip_info []ip_info
+	ip_info []*ip_info
 
 	// timer for seeing if the IP address changed (may be nil)
 	timer *time.Timer
@@ -189,7 +189,7 @@ func refresh_aaaa(ns *ns_info, done chan int) {
 	}
 
 	// make a set of IP information, copying old SRTT if present in the old set
-	var new_ip_info []ip_info
+	var new_ip_info []*ip_info
 	for _, ip := range new_ip {
 		found := false
 		for _, info := range ns.ip_info {
@@ -202,7 +202,7 @@ func refresh_aaaa(ns *ns_info, done chan int) {
 		}
 		if !found {
 			dbg.Printf("%s: adding new IP information ip=%s, srtt=0", ns.name, ip)
-			new_ip_info = append(new_ip_info, ip_info{ip: ip, srtt: 0})
+			new_ip_info = append(new_ip_info, &ip_info{ip: ip, srtt: 0})
 		}
 	}
 
@@ -261,9 +261,9 @@ func init_yeti_server_set(ips []net.IP) (srvs *yeti_server_set) {
 		yeti_priming(srvs)
 		dbg.Printf("priming done\n")
 	} else {
-		var ns_ip_info []ip_info
+		var ns_ip_info []*ip_info
 		for _, ip := range ips {
-			ns_ip_info = append(ns_ip_info, ip_info{ip: ip, srtt: 0})
+			ns_ip_info = append(ns_ip_info, &ip_info{ip: ip, srtt: 0})
 		}
 		srvs.ns = append(srvs.ns, &ns_info{ip_info: ns_ip_info})
 	}
@@ -276,15 +276,13 @@ func init_yeti_server_set(ips []net.IP) (srvs *yeti_server_set) {
 }
 
 type query_target struct {
-	// information about IP to query
-	ip_info *ip_info
-	// server to update with SRTT information
-	ns_info *ns_info
+	ip      net.IP
+	ns_name string
 }
 
 // Get the next set of IP addresses to query.
 // For most algorithms this is a single address, but it may be more (for "all").
-func (srvs *yeti_server_set) next() (targets []query_target) {
+func (srvs *yeti_server_set) next() (targets []*query_target) {
 	srvs.lock.Lock()
 	defer srvs.lock.Unlock()
 
@@ -294,16 +292,16 @@ func (srvs *yeti_server_set) next() (targets []query_target) {
 			srvs.next_ip = 0
 		}
 		ns := srvs.ns[srvs.next_server]
-		ip := &ns.ip_info[srvs.next_ip]
-		targets = append(targets, query_target{ip_info: ip, ns_info: ns})
+		ip := ns.ip_info[srvs.next_ip].ip
+		targets = append(targets, &query_target{ip: ip, ns_name: ns.name})
 		srvs.next_ip = srvs.next_ip + 1
 	} else if srvs.algorithm == "rtt" {
 		log.Fatalf("rtt-based server selection unimplemented")
 	} else {
-		var all_targets []query_target
+		var all_targets []*query_target
 		for _, ns := range srvs.ns {
-			for _, ip := range ns.ip_info {
-				all_targets = append(all_targets, query_target{ip_info: &ip, ns_info: ns})
+			for _, info := range ns.ip_info {
+				all_targets = append(all_targets, &query_target{ip: info.ip, ns_name: ns.name})
 			}
 		}
 		if srvs.algorithm == "all" {
@@ -315,16 +313,43 @@ func (srvs *yeti_server_set) next() (targets []query_target) {
 	return targets
 }
 
+func (srvs *yeti_server_set) update_srtt(ip net.IP, rtt time.Duration) {
+	dbg.Printf("update_srtt ip=%s, rtt=%s", ip, rtt)
+	srvs.lock.Lock()
+	defer srvs.lock.Unlock()
+
+	for _, ns_info := range srvs.ns {
+		for _, ip_info := range ns_info.ip_info {
+			// update the time for the IP that we just queried
+			if ip_info.ip.Equal(ip) {
+				if ip_info.srtt == 0 {
+					ip_info.srtt = rtt
+				} else {
+					ip_info.srtt = ((ip_info.srtt * 7) + (rtt * 3)) / 10
+				}
+				dbg.Printf("%s: update SRTT ip=%s, srtt=%s", ns_info.name, ip_info.ip, ip_info.srtt)
+				// all other IP have their time decayed a bit
+			} else {
+				// There may be overflow issues to worry about here. Durations
+				// are 64-bit nanoseconds, so we should be able to handle any
+				//
+				ip_info.srtt = (ip_info.srtt * 49) / 50
+				dbg.Printf("%s: decay SRTT ip=%s, srtt=%s", ns_info.name, ip_info.ip, ip_info.srtt)
+			}
+		}
+	}
+}
+
 type yeti_server_generator struct {
 	servers *yeti_server_set
-	targets chan []query_target
+	targets chan []*query_target
 }
 
 func init_yeti_server_generator(algorithm string, ips []net.IP) (gen *yeti_server_generator) {
 	gen = new(yeti_server_generator)
 	gen.servers = init_yeti_server_set(ips)
 	gen.servers.algorithm = algorithm
-	gen.targets = make(chan []query_target)
+	gen.targets = make(chan []*query_target)
 	go func() {
 		for {
 			gen.targets <- gen.servers.next()
@@ -333,6 +358,6 @@ func init_yeti_server_generator(algorithm string, ips []net.IP) (gen *yeti_serve
 	return gen
 }
 
-func (gen *yeti_server_generator) next() (targets []query_target) {
+func (gen *yeti_server_generator) next() (targets []*query_target) {
 	return <-gen.targets
 }
