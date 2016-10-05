@@ -633,15 +633,14 @@ func obfuscate_query(qname_in string) (qname_out string) {
 	return qname_out
 }
 
-// If the DNS message already has an OPT record, change the values for UDP buffer size & the DO bit.
-// If the DNS message does not already have an OPT record, add one.
-func SetOrChangeEdns0(msg *dns.Msg, udpsize uint16, do bool) *dns.Msg {
+// If the DNS message already has an OPT record, change the values for UDP buffer size.
+// If the DNS message does not already have an OPT record, add one (with DO=0).
+func SetOrChangeUDPSize(msg *dns.Msg, udpsize uint16) *dns.Msg {
 	e := msg.IsEdns0()
 	if e == nil {
-		msg.SetEdns0(udpsize, do)
+		msg.SetEdns0(udpsize, false)
 	} else {
 		e.SetUDPSize(udpsize)
-		e.SetDo(do)
 	}
 	return msg
 }
@@ -667,7 +666,7 @@ func yeti_query(gen *yeti_server_generator, clear_names bool,
 		// convert to our obfuscated name
 		iana_query.Question[0].Name = qname
 		// set our EDNS buffer size to a magic number
-		SetOrChangeEdns0(iana_query, 4093, true)
+		SetOrChangeUDPSize(iana_query, 4093)
 		//		yeti_resp, qtime, err := dnsstub.DnsQuery(server, iana_query)
 		yeti_resp, _, err := dnsstub.DnsQuery(server, iana_query)
 		if err != nil {

@@ -120,7 +120,7 @@ func count_opt(msg *dns.Msg) int {
 	return count
 }
 
-func TestSetOrChangeEdns0(t *testing.T) {
+func TestSetOrChangeUDPSize(t *testing.T) {
 	// make a new message
 	msg := new(dns.Msg)
 	if count_opt(msg) != 0 {
@@ -128,7 +128,7 @@ func TestSetOrChangeEdns0(t *testing.T) {
 	}
 
 	// try our function without any EDNS message
-	SetOrChangeEdns0(msg, 1234, false)
+	SetOrChangeUDPSize(msg, 1234)
 	if count_opt(msg) != 1 {
 		t.Errorf("%d OPT records, expected 1", count_opt(msg))
 	}
@@ -144,16 +144,13 @@ func TestSetOrChangeEdns0(t *testing.T) {
 	}
 
 	// try our function with the EDNS message
-	SetOrChangeEdns0(msg, 4321, true)
+	SetOrChangeUDPSize(msg, 4321)
 	if count_opt(msg) != 1 {
 		t.Errorf("%d OPT records, expected 1", count_opt(msg))
 	}
 	e = msg.IsEdns0()
 	if e == nil {
 		t.Errorf("Missing OPT record on message")
-	}
-	if e.Do() != true {
-		t.Errorf("DO is 0, should be 1")
 	}
 	if e.UDPSize() != 4321 {
 		t.Errorf("EDNS buffer size is %d, should be 4321", e.UDPSize())
