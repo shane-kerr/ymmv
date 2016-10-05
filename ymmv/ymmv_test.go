@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/hex"
+	"github.com/miekg/dns"
 	"strings"
 	"testing"
 )
@@ -106,5 +107,55 @@ func TestObfuscateQuery(t *testing.T) {
 	obf_newsecret := obfuscate_query("www.example")
 	if obf == obf_newsecret {
 		t.Errorf("TestObfuscateQuery(\"www.example\") == %q, should not be", obf_newsecret)
+	}
+}
+
+func count_opt(msg *dns.Msg) int {
+	count := 0
+	for _, rr := range msg.Extra {
+		if rr.Header().Rrtype == dns.TypeOPT {
+			count++
+		}
+	}
+	return count
+}
+
+func TestSetOrChangeEdns0(t *testing.T) {
+	// make a new message
+	msg := new(dns.Msg)
+	if count_opt(msg) != 0 {
+		t.Errorf("Unexpected OPT record on new message")
+	}
+
+	// try our function without any EDNS message
+	SetOrChangeEdns0(msg, 1234, false)
+	if count_opt(msg) != 1 {
+		t.Errorf("%d OPT records, expected 1", count_opt(msg))
+	}
+	e := msg.IsEdns0()
+	if e == nil {
+		t.Errorf("Missing OPT record on message")
+	}
+	if e.Do() != false {
+		t.Errorf("DO is 1, should be 0")
+	}
+	if e.UDPSize() != 1234 {
+		t.Errorf("EDNS buffer size is %d, should be 1234", e.UDPSize())
+	}
+
+	// try our function with the EDNS message
+	SetOrChangeEdns0(msg, 4321, true)
+	if count_opt(msg) != 1 {
+		t.Errorf("%d OPT records, expected 1", count_opt(msg))
+	}
+	e = msg.IsEdns0()
+	if e == nil {
+		t.Errorf("Missing OPT record on message")
+	}
+	if e.Do() != true {
+		t.Errorf("DO is 0, should be 1")
+	}
+	if e.UDPSize() != 4321 {
+		t.Errorf("EDNS buffer size is %d, should be 4321", e.UDPSize())
 	}
 }
