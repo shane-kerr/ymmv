@@ -709,16 +709,15 @@ func main() {
 	flag.Parse()
 	var ips []net.IP
 	args := flag.Args()
-	if len(args) > 1 {
-		for _, server := range args {
-			ip := net.ParseIP(server)
-			// TODO: allow host name here
-			if ip == nil {
-				log.Fatalf("Unrecognized IP address '%s'\n", server)
-			}
-			ips = append(ips, ip)
+	for _, server := range args {
+		ip := net.ParseIP(server)
+		// TODO: allow host name here
+		if ip == nil {
+			log.Fatalf("Unrecognized IP address '%s'\n", server)
 		}
+		ips = append(ips, ip)
 	}
+	dbg.Printf("ips=%s", ips)
 
 	if *secret != "" {
 		var err error
