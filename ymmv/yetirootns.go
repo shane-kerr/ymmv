@@ -296,7 +296,17 @@ func (srvs *yeti_server_set) next() (targets []*query_target) {
 		targets = append(targets, &query_target{ip: ip, ns_name: ns.name})
 		srvs.next_ip = srvs.next_ip + 1
 	} else if srvs.algorithm == "rtt" {
-		log.Fatalf("rtt-based server selection unimplemented")
+		var lowest_ip_info *ip_info = nil
+		var ns_name string
+		for _, ns := range srvs.ns {
+			for _, info := range ns.ip_info {
+				if (lowest_ip_info == nil) || (lowest_ip_info.srtt > info.srtt) {
+					lowest_ip_info = info
+					ns_name = ns.name
+				}
+			}
+		}
+		targets = append(targets, &query_target{ip: lowest_ip_info.ip, ns_name: ns_name})
 	} else {
 		var all_targets []*query_target
 		for _, ns := range srvs.ns {
