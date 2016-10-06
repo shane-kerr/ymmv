@@ -256,7 +256,7 @@ func yeti_priming(srvs *yeti_server_set) {
 	srvs.root_ns_timer = time.AfterFunc(when, func() { refresh_ns(srvs) })
 }
 
-func init_yeti_server_set(ips []net.IP) (srvs *yeti_server_set) {
+func init_yeti_server_set(ips []net.IP, algo string) (srvs *yeti_server_set) {
 	srvs = new(yeti_server_set)
 
 	if len(ips) == 0 {
@@ -276,7 +276,7 @@ func init_yeti_server_set(ips []net.IP) (srvs *yeti_server_set) {
 		srvs.ns = append(srvs.ns, &ns_info{ip_info: ns_ip_info})
 	}
 
-	srvs.algorithm = "round-robin"
+	srvs.algorithm = algo
 	srvs.next_server = 0
 	srvs.next_ip = 0
 
@@ -356,26 +356,4 @@ func (srvs *yeti_server_set) update_srtt(ip net.IP, rtt time.Duration) {
 			}
 		}
 	}
-}
-
-type yeti_server_generator struct {
-	servers *yeti_server_set
-	targets chan []*query_target
-}
-
-func init_yeti_server_generator(algorithm string, ips []net.IP) (gen *yeti_server_generator) {
-	gen = new(yeti_server_generator)
-	gen.servers = init_yeti_server_set(ips)
-	gen.servers.algorithm = algorithm
-	gen.targets = make(chan []*query_target)
-	go func() {
-		for {
-			gen.targets <- gen.servers.next()
-		}
-	}()
-	return gen
-}
-
-func (gen *yeti_server_generator) next() (targets []*query_target) {
-	return <-gen.targets
 }

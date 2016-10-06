@@ -645,11 +645,12 @@ func SetOrChangeUDPSize(msg *dns.Msg, udpsize uint16) *dns.Msg {
 	return msg
 }
 
-func yeti_query(gen *yeti_server_generator, clear_names bool, edns_size uint16,
+func yeti_query(srvs *yeti_server_set, clear_names bool, edns_size uint16,
 	iana_query *dns.Msg, iana_resp *dns.Msg,
 	output chan string) {
 	result := ""
-	for _, target := range gen.next() {
+	for _, target := range srvs.next() {
+		dbg.Printf("using server selection %s @ %s", target.ns_name, target.ip)
 		var qname string
 		if clear_names {
 			qname = iana_query.Question[0].Name
@@ -678,7 +679,7 @@ func yeti_query(gen *yeti_server_generator, clear_names bool, edns_size uint16,
 			result += compare_resp(iana_resp, yeti_resp)
 		}
 		// update our smoothed round-trip time (SRTT)
-		gen.servers.update_srtt(target.ip, rtt)
+		srvs.update_srtt(target.ip, rtt)
 	}
 	output <- result
 }
@@ -747,9 +748,8 @@ func main() {
 	messages := make(chan *ymmv_message)
 	go message_reader(messages)
 
-	// start a goroutine to generate root server targets
-	//	servers := init_yeti_server_generator("round-robin", ips)
-	servers := init_yeti_server_generator(*select_alg, ips)
+	// initialize our server set
+	servers := init_yeti_server_set(ips, *select_alg)
 
 	// make a channel to get our comparison results
 	query_output := make(chan string)
