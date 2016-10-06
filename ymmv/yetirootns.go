@@ -19,6 +19,14 @@ var yeti_root_hints = []string{
 	"yeti-ns.tisf.net.",
 }
 
+// allowed server-selection algorithms
+var server_algorithms = map[string]bool{
+	"rtt":         true,
+	"round-robin": true,
+	"random":      true,
+	"all":         true,
+}
+
 // maximum TTL to use
 //const MAX_TTL = 30
 //const MAX_TTL = 300
