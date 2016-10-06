@@ -1,5 +1,4 @@
 // TODO: IPv4 parsing?
-// TODO: use dnsstub library
 // TODO: match outbound to inbound queries
 package main
 
@@ -10,6 +9,7 @@ import (
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcapgo"
 	"github.com/miekg/dns"
+	"github.com/shane-kerr/ymmv/dnsstub"
 	"log"
 	"net"
 	"os"
@@ -45,45 +45,6 @@ func parse_root_server_addresses(addrs []string) map[string]bool {
 	return root_addresses
 }
 
-// We have a goroutine to act as a stub resolver, and use this
-// structure to send the question in and get the results out.
-type stub_resolve_info struct {
-	ownername string
-	rtype     uint16
-	answer    *dns.Msg
-}
-
-// A goroutine which performs stub lookups from a queue, writing
-// the results to another queue.
-func stub_resolve(questions <-chan stub_resolve_info,
-	results chan<- stub_resolve_info) {
-	// make a client for our lookups
-	dnsClient := new(dns.Client)
-	dnsClient.Net = "tcp"
-	// read each question on our channel
-	for question := range questions {
-		// build our answer
-		var result stub_resolve_info = question
-		result.answer = nil
-		// make a DNS query based on our question
-		query := new(dns.Msg)
-		query.RecursionDesired = true
-		query.SetQuestion(question.ownername, question.rtype)
-		// check each resolver in turn
-		for _, server := range resolv_conf.Servers {
-			resolver := server + ":53"
-			r, _, err := dnsClient.Exchange(query, resolver)
-			// if we got an answer, use that and stop trying
-			if (err == nil) && (r != nil) && (r.Rcode == dns.RcodeSuccess) {
-				result.answer = r
-				break
-			}
-		}
-		// send back our answer (might be nil)
-		results <- result
-	}
-}
-
 // Lookup all of the IP addresses associated with the root name servers.
 // Return two maps based on the results found, which have the keys of
 // the binary values of the IPv4 and IPv6 addresses. (It's a bit clumsy,
@@ -93,49 +54,38 @@ func lookup_root_server_addresses() map[string]bool {
 	if debug {
 		fmt.Fprintf(os.Stderr, "pcap2ymmv lookup_root_server_addresses()\n")
 	}
-	// look up the NS of the IANA root
-	root_client := new(dns.Client)
-	root_client.Net = "tcp"
-	ns_query := new(dns.Msg)
-	ns_query.SetQuestion(".", dns.TypeNS)
-	// TODO: avoid hard-coding a particular root server here
-	ns_response, _, err := root_client.Exchange(ns_query,
-		"f.root-servers.net:53")
+
+	// set up a resolver
+	resolver, err := dnsstub.Init(4, nil)
 	if err != nil {
-		log.Fatal("Error looking up root name servers")
+		log.Fatalf("Error setting up DNS stub resolver: %s\n", err)
 	}
+
+	// look up the NS of the IANA root
+	root_ns, _, err := resolver.SyncQuery(".", dns.TypeNS)
+	if err != nil {
+		log.Fatalf("Error looking up NS for root: %s\n", err)
+	}
+
+	// look up the A and AAAA records of each root name server
 	var root_servers []string
-	for _, root_server := range ns_response.Answer {
+	for _, root_server := range root_ns.Answer {
 		switch root_server.(type) {
 		case *dns.NS:
 			ns := root_server.(*dns.NS).Ns
 			root_servers = append(root_servers, ns)
+			resolver.AsyncQuery(ns, dns.TypeAAAA)
+			resolver.AsyncQuery(ns, dns.TypeA)
 		}
 	}
-	// look up the addresses of the root servers
-	questions := make(chan stub_resolve_info, 16)
-	results := make(chan stub_resolve_info, len(root_servers)*2)
-	for i := 0; i < 8; i++ {
-		go stub_resolve(questions, results)
-	}
-	for _, ns := range root_servers {
-		info := new(stub_resolve_info)
-		info.ownername = ns
-		info.rtype = dns.TypeAAAA
-		questions <- *info
-		info = new(stub_resolve_info)
-		info.ownername = ns
-		info.rtype = dns.TypeA
-		questions <- *info
-	}
+
 	root_addresses := make(map[string]bool)
 	for i := 0; i < len(root_servers)*2; i++ {
-		response := <-results
-		if response.answer == nil {
-			log.Fatalf("Error looking up root server %s",
-				response.ownername)
+		response, _, qname, qtype, err := resolver.Wait()
+		if err != nil {
+			log.Fatalf("Error looking up %s %s: %s", qname, qtype, err)
 		}
-		for _, root_address := range response.answer.Answer {
+		for _, root_address := range response.Answer {
 			switch root_address.(type) {
 			case *dns.AAAA:
 				aaaa_s := root_address.(*dns.AAAA).AAAA.String()
@@ -152,7 +102,6 @@ func lookup_root_server_addresses() map[string]bool {
 			}
 		}
 	}
-	close(questions)
 	return root_addresses
 }
 
