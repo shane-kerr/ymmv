@@ -1,9 +1,9 @@
 package main
 
 import (
+	"github.com/golang/glog"
 	"github.com/miekg/dns"
 	"github.com/shane-kerr/ymmv/dnsstub"
-	"log"
 	"math/rand"
 	"net"
 	"sort"
@@ -102,14 +102,14 @@ func get_root_ns(hints []string) (ns_names []string, ns_ttl uint32) {
 		var err error
 		ns_response, _, err = dnsstub.DnsQuery(root, ns_query)
 		if err != nil {
-			log.Printf("Error looking up Yeti root server NS from %s; %s", root, err)
+			glog.Warningf("Error looking up Yeti root server NS from %s; %s", root, err)
 		}
 		if ns_response != nil {
 			break
 		}
 	}
 	if ns_response == nil {
-		log.Fatalf("Unable to get NS from any Yeti root server")
+		glog.Fatalf("Unable to get NS from any Yeti root server")
 	}
 
 	// extract out the names from the NS RRset, and also save the TTL
@@ -122,7 +122,7 @@ func get_root_ns(hints []string) (ns_names []string, ns_ttl uint32) {
 	}
 
 	if len(ns_names) == 0 {
-		log.Fatalf("No NS found for Yeti root")
+		glog.Fatalf("No NS found for Yeti root")
 	}
 
 	// insure our order is repeatable
@@ -132,7 +132,7 @@ func get_root_ns(hints []string) (ns_names []string, ns_ttl uint32) {
 }
 
 func refresh_ns(srvs *yeti_server_set) {
-	dbg.Printf("refreshing root NS list")
+	glog.V(1).Infof("refreshing root NS list")
 
 	ns_names, ns_ttl := get_root_ns(yeti_root_hints)
 
@@ -169,14 +169,14 @@ func refresh_ns(srvs *yeti_server_set) {
 // TTL for the address expires, but rather than track that we just
 // temporarily stop using it.
 func refresh_aaaa(ns *ns_info, done chan int) {
-	dbg.Printf("refreshing %s", ns.name)
+	glog.V(1).Infof("refreshing %s", ns.name)
 
 	var new_ip []net.IP
 	var this_ttl uint32
 
 	answer, _, err := ns.srvs.resolver.SyncQuery(ns.name, dns.TypeAAAA)
 	if err != nil {
-		log.Printf("Error looking up %s: %s\n", ns.name, err)
+		glog.Warningf("Error looking up %s: %s\n", ns.name, err)
 	}
 
 	if answer != nil {
@@ -184,7 +184,7 @@ func refresh_aaaa(ns *ns_info, done chan int) {
 			switch root_address.(type) {
 			case *dns.AAAA:
 				aaaa := root_address.(*dns.AAAA).AAAA
-				dbg.Printf("AAAA for %s = %s", ns.name, aaaa)
+				glog.V(2).Infof("AAAA for %s = %s", ns.name, aaaa)
 				new_ip = append(new_ip, aaaa)
 				this_ttl = root_address.Header().Ttl
 			}
@@ -192,7 +192,7 @@ func refresh_aaaa(ns *ns_info, done chan int) {
 	}
 
 	if len(new_ip) == 0 {
-		log.Printf("No AAAA for %s, checking again in 300 seconds", ns.name)
+		glog.Warningf("No AAAA for %s, checking again in 300 seconds", ns.name)
 		this_ttl = 300
 	}
 
@@ -202,14 +202,17 @@ func refresh_aaaa(ns *ns_info, done chan int) {
 		found := false
 		for _, info := range ns.ip_info {
 			if ip.Equal(info.ip) {
-				dbg.Printf("%s: copying old IP information ip=%s, srtt=%s", ns.name, info.ip, info.srtt)
+				glog.V(1).Infof("%s: copying old IP information ip=%s, srtt=%s", ns.name, info.ip, info.srtt)
 				new_ip_info = append(new_ip_info, info)
 				found = true
 				break
 			}
 		}
 		if !found {
-			dbg.Printf("%s: adding new IP information ip=%s, srtt=0", ns.name, ip)
+			// if we are updating a name server that already had an IP, warn about this
+			if len(ns.ip_info) > 0 {
+				glog.Warningf("%s: adding new IP information ip=%s, srtt=0", ns.name, ip)
+			}
 			new_ip_info = append(new_ip_info, &ip_info{ip: ip, srtt: 0})
 		}
 	}
@@ -217,7 +220,7 @@ func refresh_aaaa(ns *ns_info, done chan int) {
 	ns.srvs.lock.Lock()
 	ns.ip_info = new_ip_info
 	when := use_ttl(this_ttl)
-	dbg.Printf("scheduling refresh of AAAA for %s in %s\n", ns.name, when)
+	glog.V(1).Infof("scheduling refresh of AAAA for %s in %s\n", ns.name, when)
 	ns.timer = time.AfterFunc(when, func() { refresh_aaaa(ns, nil) })
 	ns.srvs.lock.Unlock()
 
@@ -227,7 +230,7 @@ func refresh_aaaa(ns *ns_info, done chan int) {
 // get the list of root servers from known Yeti root servers
 func yeti_priming(srvs *yeti_server_set) {
 	// get the names from the NS RRset
-	dbg.Printf("getting root NS RRset")
+	glog.V(1).Infof("getting root NS RRset")
 	ns_names, ns_ttl := get_root_ns(yeti_root_hints)
 
 	aaaa_done := make(chan int)
@@ -247,12 +250,12 @@ func yeti_priming(srvs *yeti_server_set) {
 		}
 	}
 	if !found_aaaa {
-		log.Fatalf("No AAAA found for Yeti root NS")
+		glog.Fatalf("No AAAA found for Yeti root NS")
 	}
 
 	// set timer to refresh our NS RRset
 	when := use_ttl(ns_ttl)
-	dbg.Printf("scheduling refresh of NS in %s\n", when)
+	glog.V(1).Infof("scheduling refresh of NS in %s\n", when)
 	srvs.root_ns_timer = time.AfterFunc(when, func() { refresh_ns(srvs) })
 }
 
@@ -260,14 +263,14 @@ func init_yeti_server_set(ips []net.IP, algo string) (srvs *yeti_server_set) {
 	srvs = new(yeti_server_set)
 
 	if len(ips) == 0 {
-		dbg.Printf("no IP's passed, performing Yeti priming\n")
+		glog.Infof("no IP's passed, performing Yeti priming\n")
 		var err error
 		srvs.resolver, err = dnsstub.Init(4, nil)
 		if err != nil {
-			log.Fatalf("Error setting up DNS stub resolver: %s\n", err)
+			glog.Fatalf("Error setting up DNS stub resolver: %s\n", err)
 		}
 		yeti_priming(srvs)
-		dbg.Printf("priming done\n")
+		glog.V(1).Infof("priming done\n")
 	} else {
 		var ns_ip_info []*ip_info
 		for _, ip := range ips {
@@ -332,7 +335,7 @@ func (srvs *yeti_server_set) next() (targets []*query_target) {
 }
 
 func (srvs *yeti_server_set) update_srtt(ip net.IP, rtt time.Duration) {
-	dbg.Printf("update_srtt ip=%s, rtt=%s", ip, rtt)
+	glog.V(3).Infof("update_srtt ip=%s, rtt=%s", ip, rtt)
 	srvs.lock.Lock()
 	defer srvs.lock.Unlock()
 
@@ -345,14 +348,14 @@ func (srvs *yeti_server_set) update_srtt(ip net.IP, rtt time.Duration) {
 				} else {
 					ip_info.srtt = ((ip_info.srtt * 7) + (rtt * 3)) / 10
 				}
-				dbg.Printf("%s: update SRTT ip=%s, srtt=%s", ns_info.name, ip_info.ip, ip_info.srtt)
+				glog.V(2).Infof("%s: update SRTT ip=%s, srtt=%s", ns_info.name, ip_info.ip, ip_info.srtt)
 				// all other IP have their time decayed a bit
 			} else {
 				// There may be overflow issues to worry about here. Durations
 				// are 64-bit nanoseconds, so we should be able to handle any
 				//
 				ip_info.srtt = (ip_info.srtt * 49) / 50
-				dbg.Printf("%s: decay SRTT ip=%s, srtt=%s", ns_info.name, ip_info.ip, ip_info.srtt)
+				glog.V(3).Infof("%s: decay SRTT ip=%s, srtt=%s", ns_info.name, ip_info.ip, ip_info.srtt)
 			}
 		}
 	}

@@ -51,9 +51,13 @@ You need the Go language `dns` library from the awesome Miek Gieben:
 
     $ go get github.com/miekg/dns
 
-You also need the Go language packet library from Google:
+You need the Go language packet library from Google:
 
     $ go get github.com/google/gopacket
+
+You need the glog logging library from Google:
+
+    $ go get github.com/golang/glog
 
 To build the `pcap` to `ymmv` filter/converter:
 

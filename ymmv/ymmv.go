@@ -7,10 +7,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/golang/glog"
 	"github.com/miekg/dns"
 	"github.com/shane-kerr/ymmv/dnsstub"
 	"io"
-	"log"
 	"math/rand"
 	"net"
 	"os"
@@ -20,18 +20,6 @@ import (
 	"strings"
 	"time"
 )
-
-// debug output
-type debug_flag bool
-
-var dbg debug_flag = true
-var dbg_log *log.Logger = log.New(os.Stderr, "DEBUG ", log.Lmicroseconds|log.LUTC)
-
-func (dbg debug_flag) Printf(format string, args ...interface{}) {
-	if dbg {
-		dbg_log.Printf(format, args...)
-	}
-}
 
 type ymmv_message struct {
 	ip_family   byte
@@ -64,8 +52,7 @@ func (y ymmv_message) print() {
 	} else {
 		protocol_str = "TCP"
 	}
-	header := fmt.Sprintf("===[ ymmv message (IPv%d, %s, %s) ]",
-		y.ip_family, protocol_str, y.addr)
+	header := fmt.Sprintf("===[ ymmv message (IPv%d, %s, %s) ]", y.ip_family, protocol_str, y.addr)
 	fmt.Printf("%s\n", PadRight(header, 78, "="))
 	fmt.Printf("%s\n", y.query)
 	if y.query_time.Unix() == 0 {
@@ -113,8 +100,7 @@ func read_next_message() (y *ymmv_message, err error) {
 	} else if tmp_ip_family[0] == '6' {
 		ip_family = 6
 	} else {
-		errmsg := fmt.Sprintf("Expecting '4' or '6' for IP family, got '%s'",
-			tmp_ip_family)
+		errmsg := fmt.Sprintf("Expecting '4' or '6' for IP family, got '%s'", tmp_ip_family)
 		return nil, errors.New(errmsg)
 	}
 
@@ -127,8 +113,7 @@ func read_next_message() (y *ymmv_message, err error) {
 		return nil, errors.New("Couldn't read TCP or UDP")
 	}
 	if (protocol[0] != 'u') && (protocol[0] != 't') {
-		errmsg := fmt.Sprintf("Expecting 't'cp or 'u'dp for protocol, got '%s'",
-			protocol)
+		errmsg := fmt.Sprintf("Expecting 't'cp or 'u'dp for protocol, got '%s'", protocol)
 		return nil, errors.New(errmsg)
 	}
 
@@ -144,8 +129,7 @@ func read_next_message() (y *ymmv_message, err error) {
 		return nil, err
 	}
 	if nread != cap(tmp_addr) {
-		errmsg := fmt.Sprintf("Only read %d of %d bytes of address",
-			nread, cap(tmp_addr))
+		errmsg := fmt.Sprintf("Only read %d of %d bytes of address", nread, cap(tmp_addr))
 		return nil, errors.New(errmsg)
 	}
 	addr := net.IP(tmp_addr)
@@ -394,12 +378,14 @@ func skip_comparison(query *dns.Msg) bool {
 	if name == "." {
 		return true
 	}
+	// skip queries for server information
 	if name == "id.server." {
 		return true
 	}
 	if name == "hostname.bind." {
 		return true
 	}
+	// the IANA servers are authoritative for ROOT-SERVERS.NET, we are not
 	if strings.HasSuffix(name, ".root-servers.net.") {
 		return true
 	}
@@ -613,14 +599,14 @@ func obfuscate_query(qname_in string) (qname_out string) {
 		obfuscate_secret = make([]byte, 8, 8)
 		nread, err := rand.Read(obfuscate_secret)
 		if err != nil {
-			log.Fatalf("Error generating random obfuscation secret: %s", err)
+			glog.Fatalf("Error generating random obfuscation secret: %s", err)
 		}
 		if nread != 8 {
-			log.Fatalf("Read %d bytes for random obfuscation secret, wanted 8", nread)
+			glog.Fatalf("Read %d bytes for random obfuscation secret, wanted 8", nread)
 		}
 		hex_output := make([]byte, 16, 16)
 		hex.Encode(hex_output, obfuscate_secret)
-		log.Printf("generated random obfuscation secret %s", strings.ToUpper(string(hex_output)))
+		glog.Infof("generated random obfuscation secret %s", strings.ToUpper(string(hex_output)))
 	}
 	hash_input := append(obfuscate_secret, []byte(strings.ToLower(strings.Join(labels, ".")))...)
 	hashed := sha256.Sum256(hash_input)
@@ -629,7 +615,7 @@ func obfuscate_query(qname_in string) (qname_out string) {
 	qname_out = "ymmv." + string(hashed_hex[0:16]) + "."
 	qname_out += strings.ToLower(strings.Join(labels[len(labels)-1:len(labels)], ".")) + "."
 
-	dbg.Printf("obfuscated %s to %s", qname_in, qname_out)
+	glog.V(2).Infof("obfuscated %s to %s", qname_in, qname_out)
 	return qname_out
 }
 
@@ -645,22 +631,20 @@ func SetOrChangeUDPSize(msg *dns.Msg, udpsize uint16) *dns.Msg {
 	return msg
 }
 
-func yeti_query(srvs *yeti_server_set, clear_names bool, edns_size uint16,
-	iana_query *dns.Msg, iana_resp *dns.Msg,
-	output chan string) {
-	result := ""
+func yeti_query(sync chan bool, srvs *yeti_server_set, clear_names bool, edns_size uint16,
+	iana_query *dns.Msg, iana_resp *dns.Msg) {
+	org_qname := iana_query.Question[0].Name
+	var qname string
+	if clear_names {
+		qname = iana_query.Question[0].Name
+	} else {
+		qname = obfuscate_query(iana_query.Question[0].Name)
+	}
 	for _, target := range srvs.next() {
-		dbg.Printf("using server selection %s @ %s", target.ns_name, target.ip)
-		var qname string
-		if clear_names {
-			qname = iana_query.Question[0].Name
-		} else {
-			qname = obfuscate_query(iana_query.Question[0].Name)
-		}
+		glog.V(2).Infof("using server selection %s @ %s", target.ns_name, target.ip)
 		server := "[" + target.ip.String() + "]:53"
-		result += log.Prefix()
-		result += fmt.Sprintf("Sending query '%s' %s as '%s' to %s @ %s\n",
-			iana_query.Question[0].Name,
+		glog.V(1).Infof("sending query '%s' %s as '%s' to %s @ %s\n",
+			org_qname,
 			dns.TypeToString[iana_query.Question[0].Qtype],
 			qname,
 			target.ns_name,
@@ -674,21 +658,24 @@ func yeti_query(srvs *yeti_server_set, clear_names bool, edns_size uint16,
 		// do the actual query
 		yeti_resp, rtt, err := dnsstub.DnsQuery(server, iana_query)
 		if err != nil {
-			result += fmt.Sprintf("Error querying Yeti root server; %s\n", err)
+			glog.Infof("Error querying Yeti root server %s @ %s; %s\n", target.ns_name, server, err)
 		} else {
-			result += compare_resp(iana_resp, yeti_resp)
+			//			result += compare_resp(iana_resp, yeti_resp)
+			compare_resp(iana_resp, yeti_resp)
 		}
 		// update our smoothed round-trip time (SRTT)
 		srvs.update_srtt(target.ip, rtt)
+		glog.Flush()
 	}
-	output <- result
+
+	sync <- true
 }
 
 func message_reader(output chan *ymmv_message) {
 	for {
 		y, err := read_next_message()
 		if (err != nil) && (err != io.EOF) {
-			log.Fatal(err)
+			glog.Fatal(err)
 		}
 		output <- y
 		if y == nil {
@@ -698,7 +685,6 @@ func message_reader(output chan *ymmv_message) {
 }
 
 // Main function.
-// TODO: verbose/debug flags
 func main() {
 	clear_names := flag.Bool("c", false, "use non-obfuscated (clear) query names")
 	secret := flag.String("s", "",
@@ -714,19 +700,21 @@ func main() {
 		ip := net.ParseIP(server)
 		// TODO: allow host name here
 		if ip == nil {
-			log.Fatalf("Unrecognized IP address '%s'\n", server)
+			fmt.Printf("Unrecognized IP address '%s'\n", server)
+			os.Exit(1)
 		}
 		ips = append(ips, ip)
 	}
-	dbg.Printf("ips=%s", ips)
+	glog.V(2).Infof("ips=%s", ips)
 
 	if *secret != "" {
 		var err error
 		obfuscate_secret, err = hex.DecodeString(*secret)
 		if err != nil {
-			log.Fatalf("Error decoding secret for obfuscated query names: %s", err)
+			fmt.Printf("Error decoding secret for obfuscated query names: %s", err)
+			os.Exit(1)
 		}
-		log.Printf("using obfuscation secret %s", strings.ToUpper(*secret))
+		glog.Infof("using obfuscation secret %s", strings.ToUpper(*secret))
 	}
 
 	// verify our EDNS buffer size
@@ -751,32 +739,33 @@ func main() {
 	// initialize our server set
 	servers := init_yeti_server_set(ips, *select_alg)
 
-	// make a channel to get our comparison results
-	query_output := make(chan string)
+	// make a channel for finishing comparisons
+	query_sync := make(chan bool)
 
 	// keep track of number of outstanding queries
 	query_count := 0
 
 	// main loop, gets answers to compare and collects the results
 	for {
+		glog.Flush()
 		select {
 		// new answer to compare
 		case y := <-messages:
 			if y == nil {
 				break
 			}
-			go yeti_query(servers, *clear_names, uint16(*edns_size), y.query, y.answer, query_output)
+			go yeti_query(query_sync, servers, *clear_names, uint16(*edns_size), y.query, y.answer)
 			query_count += 1
 		// comparison done
-		case str := <-query_output:
-			fmt.Print(str)
+		case <-query_sync:
 			query_count -= 1
 		}
 	}
 
 	// wait for any outstanding queries to finish before exiting
 	for query_count > 0 {
-		fmt.Print(<-query_output)
+		<-query_sync
 		query_count -= 1
+		glog.Flush()
 	}
 }
