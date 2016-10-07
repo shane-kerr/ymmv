@@ -1,5 +1,3 @@
-// TODO: IPv4 parsing?
-// TODO: match outbound to inbound queries
 package main
 
 import (
@@ -106,7 +104,7 @@ func lookup_root_server_addresses() map[string]bool {
 }
 
 func ymmv_write(ip_family int, addr net.IP,
-    query_time time.Time, query *dns.Msg, answer_time time.Time, answer *dns.Msg) {
+	query_time time.Time, query *dns.Msg, answer_time time.Time, answer *dns.Msg) {
 	// output magic value
 	_, err := os.Stdout.Write([]byte("ymmv"))
 	if err != nil {
@@ -201,43 +199,21 @@ func ymmv_write(ip_family int, addr net.IP,
 	}
 }
 
-func parse_query(raw_answer []byte) (*dns.Msg, *dns.Msg, error) {
-	// parse the query
-	answer := new(dns.Msg)
-	err := answer.Unpack(raw_answer)
-	if err != nil {
-		return nil, nil, err
-	}
-	answer.Id = 0
-	// infer the answer and build that
-	query := answer.Copy()
-	query.Response = false
-	query.Authoritative = false
-	query.Truncated = false
-	query.AuthenticatedData = true
-	query.CheckingDisabled = true
-	query.Rcode = 0
-	query.Answer = nil
-	query.Ns = nil
-	query.Extra = nil
-	return query, answer, nil
-}
-
 type sent_pkt_info struct {
-    when        time.Time
-    src_ip      net.IP
-    src_port    uint16
-    dst_ip      net.IP
-    dst_port    uint16
-    msg         *dns.Msg
+	when     time.Time
+	src_ip   net.IP
+	src_port uint16
+	dst_ip   net.IP
+	dst_port uint16
+	msg      *dns.Msg
 }
 
 func make_key(pi *sent_pkt_info, is_query bool) string {
-    if is_query {
-        return fmt.Sprintf("%s|%d|%s|%d|%d", pi.src_ip, pi.src_port, pi.dst_ip, pi.dst_port, pi.msg.Id)
-    } else {
-        return fmt.Sprintf("%s|%d|%s|%d|%d", pi.dst_ip, pi.dst_port, pi.src_ip, pi.src_port, pi.msg.Id)
-    }
+	if is_query {
+		return fmt.Sprintf("%s|%d|%s|%d|%d", pi.src_ip, pi.src_port, pi.dst_ip, pi.dst_port, pi.msg.Id)
+	} else {
+		return fmt.Sprintf("%s|%d|%s|%d|%d", pi.dst_ip, pi.dst_port, pi.src_ip, pi.src_port, pi.msg.Id)
+	}
 }
 
 // Look in the named file and find any packets that are from our root
@@ -259,7 +235,7 @@ func pcap2ymmv(fname string, root_addresses map[string]bool) {
 		log.Fatal(err)
 	}
 
-    pkt_sent := make(map[string]*sent_pkt_info)
+	pkt_sent := make(map[string]*sent_pkt_info)
 
 	for {
 		// reach each packet
@@ -274,50 +250,50 @@ func pcap2ymmv(fname string, root_addresses map[string]bool) {
 
 		ip_match := false
 		var ip_family int
-        var is_query bool
-        var pkt_info *sent_pkt_info
+		var is_query bool
+		var pkt_info *sent_pkt_info
 
 		//  parse our packet information
-        packet := gopacket.NewPacket(pkt_bytes, pcap_file.LinkType(), gopacket.Default)
-        if packet == nil {
-            fmt.Fprintf(os.Stderr, "pcap2ymmv unable to parse packet\n")
-            continue
-        }
+		packet := gopacket.NewPacket(pkt_bytes, pcap_file.LinkType(), gopacket.Default)
+		if packet == nil {
+			fmt.Fprintf(os.Stderr, "pcap2ymmv unable to parse packet\n")
+			continue
+		}
 
-        // filter based on our IP addresses
+		// filter based on our IP addresses
 		ipv6, _ := packet.Layer(layers.LayerTypeIPv6).(*layers.IPv6)
 		if ipv6 != nil {
 			ip_family = 6
 			if debug {
 				fmt.Fprintf(os.Stderr, "pcap2ymmv IPv6 %s -> %s\n", ipv6.SrcIP, ipv6.DstIP)
 			}
-            pkt_info = &sent_pkt_info{when:ci.Timestamp, src_ip:ipv6.SrcIP, dst_ip:ipv6.DstIP,}
-            // if the destination IP address is one of our targets, this is a query
-            is_query = true
+			pkt_info = &sent_pkt_info{when: ci.Timestamp, src_ip: ipv6.SrcIP, dst_ip: ipv6.DstIP}
+			// if the destination IP address is one of our targets, this is a query
+			is_query = true
 			_, ip_match = root_addresses[ipv6.DstIP.String()]
 			if !ip_match {
-                // if the source IP address is one of our targets, this is an answer
-               is_query = false
-			    _, ip_match = root_addresses[ipv6.SrcIP.String()]
-		    }
+				// if the source IP address is one of our targets, this is an answer
+				is_query = false
+				_, ip_match = root_addresses[ipv6.SrcIP.String()]
+			}
 		} else {
 			ipv4, _ := packet.Layer(layers.LayerTypeIPv4).(*layers.IPv4)
 			if ipv4 == nil {
-                continue
-            }
+				continue
+			}
 			ip_family = 4
 			if debug {
 				fmt.Fprintf(os.Stderr, "pcap2ymmv IPv4 %s -> %s\n", ipv4.SrcIP.String(), ipv4.DstIP.String())
 			}
-            pkt_info = &sent_pkt_info{when:ci.Timestamp, src_ip:ipv4.SrcIP, dst_ip:ipv4.DstIP,}
-            // if the destination IP address is one of our targets, this is a query
-            is_query = true
+			pkt_info = &sent_pkt_info{when: ci.Timestamp, src_ip: ipv4.SrcIP, dst_ip: ipv4.DstIP}
+			// if the destination IP address is one of our targets, this is a query
+			is_query = true
 			_, ip_match = root_addresses[ipv4.DstIP.String()]
 			if !ip_match {
-                // if the source IP address is one of our targets, this is an answer
-               is_query = false
-			    _, ip_match = root_addresses[ipv4.SrcIP.String()]
-		    }
+				// if the source IP address is one of our targets, this is an answer
+				is_query = false
+				_, ip_match = root_addresses[ipv4.SrcIP.String()]
+			}
 		}
 		if debug {
 			fmt.Fprintf(os.Stderr, "pcap2ymmv IP match %t, query %t\n", ip_match, is_query)
@@ -335,66 +311,47 @@ func pcap2ymmv(fname string, root_addresses map[string]bool) {
 		if debug {
 			fmt.Fprintf(os.Stderr, "pcap2ymmv UDP port src:%d, dst:%d\n", udp.SrcPort, udp.DstPort)
 		}
-        if is_query {
-            if udp.DstPort != 53 {
-                continue
-            }
-        } else {
-            if udp.SrcPort != 53 {
-                continue
-            }
-        }
-        pkt_info.src_port = uint16(udp.SrcPort)
-        pkt_info.dst_port = uint16(udp.DstPort)
+		if is_query {
+			if udp.DstPort != 53 {
+				continue
+			}
+		} else {
+			if udp.SrcPort != 53 {
+				continue
+			}
+		}
+		pkt_info.src_port = uint16(udp.SrcPort)
+		pkt_info.dst_port = uint16(udp.DstPort)
 
 		// if we got a valid IP and UDP packet, process it
 		if debug {
 			fmt.Fprintf(os.Stderr, "pcap2ymmv matched packet, is_query:%t\n", is_query)
 		}
 
-        // parse the DNS packet
-        pkt_info.msg = new(dns.Msg)
-        err = pkt_info.msg.Unpack(udp.Payload)
-	    if err != nil {
-		    fmt.Fprintf(os.Stderr, "pcap2ymmv error unpacking DNS message: %s\n", err)
-            continue
-	    }
-
-		// parse the payload as the DNS message
-/*		msg, answer, err := parse_query(udp.Payload)
+		// parse the DNS packet
+		pkt_info.msg = new(dns.Msg)
+		err = pkt_info.msg.Unpack(udp.Payload)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "pcap2ymmv error unpacking DNS message: %s\n", err)
-            continue
+			continue
 		}
-        pkt_info.msg = msg
-*/
 
-        key := make_key(pkt_info, is_query)
-        if is_query {
-            // XXX: devel
-            fmt.Fprintf(os.Stderr, "adding key %s\n", key)
-            pkt_sent[key] = pkt_info
-        } else {
-            sent_pkt_info, ok := pkt_sent[key]
-            if ok {
-                fmt.Fprintf(os.Stderr, "writing ymmv output\n")
-                ymmv_write(ip_family, pkt_info.src_ip,
-                    sent_pkt_info.when, sent_pkt_info.msg, pkt_info.when, pkt_info.msg)
-                fmt.Fprintf(os.Stderr, "query took %s\n", pkt_info.when.Sub(sent_pkt_info.when))
-                fmt.Fprintf(os.Stderr, "removing key %s\n", key)
-                delete(pkt_sent, key)
-            } else {
-                fmt.Fprintf(os.Stderr, "reply without sent message %s\n", key)
-            }
-        }
-        // XXX:
-        ip_family = ip_family
-    }
+		// actually process the query
+		key := make_key(pkt_info, is_query)
+		if is_query {
+			pkt_sent[key] = pkt_info
+		} else {
+			sent_pkt_info, ok := pkt_sent[key]
+			if ok {
+				ymmv_write(ip_family, pkt_info.src_ip,
+					sent_pkt_info.when, sent_pkt_info.msg, pkt_info.when, pkt_info.msg)
+				delete(pkt_sent, key)
+			} else {
+				fmt.Fprintf(os.Stderr, "reply without sent message %s\n", key)
+			}
+		}
+	}
 
-/*
-			ymmv_write(ip_family, ip_addr, *query, ci.Timestamp, *answer)
-			os.Stdout.Sync()
-		}*/
 	file.Close()
 }
 
