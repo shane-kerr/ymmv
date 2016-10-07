@@ -35,7 +35,7 @@ To build the binaries yourself, you need to have Go installed.
 
 You can download the source code from GitHub: 
  
-    https://github.com/shane-kerr/ymmv/archive/master.zip
+https://github.com/shane-kerr/ymmv/archive/master.zip
 
 You can also use git to clone the repository:
 
