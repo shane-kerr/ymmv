@@ -15,10 +15,10 @@ be found in
 [ymmv-format.md](https://github.com/shane-kerr/ymmv/blob/master/ymmv-format.md).
 
 For each query and answer that the resolver has made to the IANA root
-servers, a version is be sent to the some Yeti root servers. Initially
-the particular Yeti server is be round-robin from a list of servers
-(or all Yeti servers if none is specified), but later we will add
-random, all, and RTT-based server selection.
+servers, a version is be sent to the some Yeti root servers. By
+default the Yeti server is chosen using a smoothed round-trip time
+(SRTT) algorithm, modeled after the BIND 9 algorithm, but other
+options such as round-robin or random are also possible.
 
 The Yeti answer that is returned is compared to the IANA answer, and
 if there is a difference this is logged. Later, administrators will
@@ -28,9 +28,22 @@ to the Yeti project.
 
 Installation
 ============
+The software is written in the Go language, with some optional Bourne
+shell scripts.
+
+To build the binaries yourself, you need to have Go installed.
+
+You can download the source code from GitHub: 
+ 
+    https://github.com/shane-kerr/ymmv/archive/master.zip
+
+You can also use git to clone the repository:
+
+    $ git clone https://github.com/shane-kerr/ymmv.git
+
 You need the `libpcap` library, which can be downloaded from the
 [tcpdump](http://www.tcpdump.org/) project page. On a Debian or
-Debian-derived systems installation will look something like this:
+Debian-derived system installation will look something like this:
 
     $ sudo apt install libpcap-dev
 
@@ -52,6 +65,8 @@ To build the `ymmv` program itself:
     $ cd ymmv
     $ go build
 
+The binaries are statically linked, so you can just copy them to any
+system that you want to run them on.
 
 Running
 =======
@@ -91,6 +106,85 @@ The easiest approach is probably to update the `compare.sh` script to
 suit your needs. It is fairly short and hopefully easy to modify.
 
 
+ymmv Command-Line
+=================
+Whether you customize `compare.sh` or use some other means to run
+`ymmv`, you have some command-line options available.
+
+You can see these options via `ymmv -h`:
+
+    Usage of ./ymmv:
+      -a string
+            set server-selection algorithm, either rtt, round-robin, random, or all (default "rtt")
+      -c    use non-obfuscated (clear) query names
+      -e uint
+            set EDNS0 buffer size (set to 0 to use original query size) (default 4093)
+      -s string
+            secret for obfuscated query names, hex-encoded (default random-generated)
+
+### Server Selection Algorithm
+
+The ymmv program will choose one of the Yeti root servers to send
+queries to, based on the server selection algorithm.
+
+* **rtt**: The default algorithm is "rtt", which uses a smoothed
+  round-trip time (SRTT) to pick which server to use. This is based
+  off of the BIND 9 algorithm, where it prefers the fastest server,
+  but will periodically try other servers so that if the network or
+  server performance changes and those become faster that those are
+  used. This mimics the behavior of real resolvers the most closely.
+
+* **round-robin**: This algorithm cycles through all of the servers,
+  in-order. It is useful to insure that all of the Yeti servers are
+  tested relatively equally.
+
+* **random**: With "random" each time we pick a server we choose one
+  at random. This also selects all of the Yeti servers approximately
+  equally, but is less predictable. The randomness may help avoid some
+  artifacts that may result from the "round-robin" algorithm.
+
+* **all**: It is also possible to send each query to _all_ of the Yeti
+  root servers. This will increase the load on the Yeti system, and
+  provide a clear view of the performance of each Yeti server. It does
+  not act like a real resolver however.
+
+### Obfuscated Query Names
+
+By default, `ymmv` will obfuscate the query names (QNAME) that it
+sends to the Yeti root servers.
+
+The obfuscated query is generated via a hash function so that we
+consistently send the same random query for the same actual queries.
+There is a secret mixed in, so that it is not possible for the
+authoritative operator to use a dictionary attack to figure out the
+original query.
+
+Here we see a basic obfuscation:
+
+    DEBUG 13:07:26.699347 obfuscated fugazi.org. to ymmv.7ffc968b471b6cb0.org.
+
+We use the same obfuscated string for a different QTYPE. We _could_
+mix the QTYPE into the hash input to avoid this property, but this is
+not done now.
+
+You can specify the obfuscation secret on startup, otherwise it will
+be generated randomly. Use the `-s` flag to set this secret. This is
+useful if you want consistent values across different runs on the same
+machine, for example. If the secret is generated randomly, `ymmv` will
+log the result when it starts, something like this:
+
+    2016/10/04 15:02:18 using obfuscation secret 99DF398E70D5462B
+
+To disable obfuscation completely and send the original, clear QNAME,
+use the `-c` flag.
+
+### EDNS Buffer Size
+
+By default `ymmv` uses an unusual buffer size, 4093. This should make
+it easier to spot use of `ymmv` on the authoritative side. You can use
+the `-e` flag to set this to some other value. A value of 0 means to
+use the EDNS buffer size of the original query.
+
 Limitations
 ===========
 There are several limitations right now, being worked on:
@@ -101,18 +195,6 @@ There are several limitations right now, being worked on:
 We are currently working on a separate program which will perform IP
 fragment reassembly and extract DNS queries and answers from TCP
 streams.
-
-* No SRTT algorithm for selecting Yeti root servers to query yet
-  exists. This would be helpful for making the program look more like
-  a real recursive resolver.
-
-* The Yeti servers are only looked up on start. Periodic priming will
-  be added.
-
-* The program sends the same queries to the Yeti root servers that go
-  to the IANA root servers. We are working on a change to allow QNAME
-  minimization on Yeti queries, which will remove personally
-  identifiable information and make the tool even more widely useful.
 
 * No easy way exists to report differences found back to the Yeti
   operators. This will be added as an opt-in "--email-to" command-line
