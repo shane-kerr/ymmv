@@ -105,8 +105,8 @@ func lookup_root_server_addresses() map[string]bool {
 	return root_addresses
 }
 
-func ymmv_write(ip_family int, addr net.IP, query dns.Msg,
-	answer_time time.Time, answer dns.Msg) {
+func ymmv_write(ip_family int, addr net.IP,
+    query_time time.Time, query *dns.Msg, answer_time time.Time, answer *dns.Msg) {
 	// output magic value
 	_, err := os.Stdout.Write([]byte("ymmv"))
 	if err != nil {
@@ -137,8 +137,17 @@ func ymmv_write(ip_family int, addr net.IP, query dns.Msg,
 		log.Fatal(err)
 	}
 
-	// output when the query happened (we don't know, so use 0)
-	_, err = os.Stdout.Write([]byte{0, 0, 0, 0, 0, 0, 0, 0})
+	// output when the query happened
+	seconds := uint32(query_time.Unix())
+	err = binary.Write(os.Stdout, binary.BigEndian, seconds)
+	if err != nil {
+		log.Fatal(err)
+	}
+	nanoseconds := uint32(query_time.Nanosecond())
+	err = binary.Write(os.Stdout, binary.BigEndian, nanoseconds)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// write the byte count of our query
 	query_bytes, err := query.Pack()
@@ -158,12 +167,12 @@ func ymmv_write(ip_family int, addr net.IP, query dns.Msg,
 	}
 
 	// output when the answer arrived
-	seconds := uint32(answer_time.Unix())
+	seconds = uint32(answer_time.Unix())
 	err = binary.Write(os.Stdout, binary.BigEndian, seconds)
 	if err != nil {
 		log.Fatal(err)
 	}
-	nanoseconds := uint32(answer_time.Nanosecond())
+	nanoseconds = uint32(answer_time.Nanosecond())
 	err = binary.Write(os.Stdout, binary.BigEndian, nanoseconds)
 	if err != nil {
 		log.Fatal(err)
@@ -366,9 +375,12 @@ func pcap2ymmv(fname string, root_addresses map[string]bool) {
             fmt.Fprintf(os.Stderr, "adding key %s\n", key)
             pkt_sent[key] = pkt_info
         } else {
-//            sent_pkt_info, ok := pkt_sent[key]
-            _, ok := pkt_sent[key]
+            sent_pkt_info, ok := pkt_sent[key]
             if ok {
+                fmt.Fprintf(os.Stderr, "writing ymmv output\n")
+                ymmv_write(ip_family, pkt_info.src_ip,
+                    sent_pkt_info.when, sent_pkt_info.msg, pkt_info.when, pkt_info.msg)
+                fmt.Fprintf(os.Stderr, "query took %s\n", pkt_info.when.Sub(sent_pkt_info.when))
                 fmt.Fprintf(os.Stderr, "removing key %s\n", key)
                 delete(pkt_sent, key)
             } else {
