@@ -192,9 +192,9 @@ There are several limitations right now, being worked on:
 * IP fragments are not handled by the pcap parser.
 * TCP streams are not reassembled by the pcap parser.
 
-We are currently working on a separate program which will perform IP
-fragment reassembly and extract DNS queries and answers from TCP
-streams.
+The [PcapParser](https://github.com/RunxiaWan/PcapParser) can be used
+to perform IP fragment reassembly and extract DNS queries and answers
+from TCP streams. It will be further integrated in the future.
 
 * No easy way exists to report differences found back to the Yeti
   operators. This will be added as an opt-in "--email-to" command-line
