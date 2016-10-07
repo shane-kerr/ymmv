@@ -1,6 +1,3 @@
-// TODO: IPv4 parsing?
-// TODO: use dnsstub library
-// TODO: match outbound to inbound queries
 package main
 
 import (
@@ -10,11 +7,14 @@ import (
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcapgo"
 	"github.com/miekg/dns"
+	"github.com/shane-kerr/ymmv/dnsstub"
 	"log"
 	"net"
 	"os"
 	"time"
 )
+
+const REPLY_TIMEOUT = time.Hour
 
 var (
 	// We store the configuration of our local resolver in a global
@@ -45,45 +45,6 @@ func parse_root_server_addresses(addrs []string) map[string]bool {
 	return root_addresses
 }
 
-// We have a goroutine to act as a stub resolver, and use this
-// structure to send the question in and get the results out.
-type stub_resolve_info struct {
-	ownername string
-	rtype     uint16
-	answer    *dns.Msg
-}
-
-// A goroutine which performs stub lookups from a queue, writing
-// the results to another queue.
-func stub_resolve(questions <-chan stub_resolve_info,
-	results chan<- stub_resolve_info) {
-	// make a client for our lookups
-	dnsClient := new(dns.Client)
-	dnsClient.Net = "tcp"
-	// read each question on our channel
-	for question := range questions {
-		// build our answer
-		var result stub_resolve_info = question
-		result.answer = nil
-		// make a DNS query based on our question
-		query := new(dns.Msg)
-		query.RecursionDesired = true
-		query.SetQuestion(question.ownername, question.rtype)
-		// check each resolver in turn
-		for _, server := range resolv_conf.Servers {
-			resolver := server + ":53"
-			r, _, err := dnsClient.Exchange(query, resolver)
-			// if we got an answer, use that and stop trying
-			if (err == nil) && (r != nil) && (r.Rcode == dns.RcodeSuccess) {
-				result.answer = r
-				break
-			}
-		}
-		// send back our answer (might be nil)
-		results <- result
-	}
-}
-
 // Lookup all of the IP addresses associated with the root name servers.
 // Return two maps based on the results found, which have the keys of
 // the binary values of the IPv4 and IPv6 addresses. (It's a bit clumsy,
@@ -93,49 +54,38 @@ func lookup_root_server_addresses() map[string]bool {
 	if debug {
 		fmt.Fprintf(os.Stderr, "pcap2ymmv lookup_root_server_addresses()\n")
 	}
-	// look up the NS of the IANA root
-	root_client := new(dns.Client)
-	root_client.Net = "tcp"
-	ns_query := new(dns.Msg)
-	ns_query.SetQuestion(".", dns.TypeNS)
-	// TODO: avoid hard-coding a particular root server here
-	ns_response, _, err := root_client.Exchange(ns_query,
-		"f.root-servers.net:53")
+
+	// set up a resolver
+	resolver, err := dnsstub.Init(4, nil)
 	if err != nil {
-		log.Fatal("Error looking up root name servers")
+		log.Fatalf("Error setting up DNS stub resolver: %s\n", err)
 	}
+
+	// look up the NS of the IANA root
+	root_ns, _, err := resolver.SyncQuery(".", dns.TypeNS)
+	if err != nil {
+		log.Fatalf("Error looking up NS for root: %s\n", err)
+	}
+
+	// look up the A and AAAA records of each root name server
 	var root_servers []string
-	for _, root_server := range ns_response.Answer {
+	for _, root_server := range root_ns.Answer {
 		switch root_server.(type) {
 		case *dns.NS:
 			ns := root_server.(*dns.NS).Ns
 			root_servers = append(root_servers, ns)
+			resolver.AsyncQuery(ns, dns.TypeAAAA)
+			resolver.AsyncQuery(ns, dns.TypeA)
 		}
 	}
-	// look up the addresses of the root servers
-	questions := make(chan stub_resolve_info, 16)
-	results := make(chan stub_resolve_info, len(root_servers)*2)
-	for i := 0; i < 8; i++ {
-		go stub_resolve(questions, results)
-	}
-	for _, ns := range root_servers {
-		info := new(stub_resolve_info)
-		info.ownername = ns
-		info.rtype = dns.TypeAAAA
-		questions <- *info
-		info = new(stub_resolve_info)
-		info.ownername = ns
-		info.rtype = dns.TypeA
-		questions <- *info
-	}
+
 	root_addresses := make(map[string]bool)
 	for i := 0; i < len(root_servers)*2; i++ {
-		response := <-results
-		if response.answer == nil {
-			log.Fatalf("Error looking up root server %s",
-				response.ownername)
+		response, _, qname, qtype, err := resolver.Wait()
+		if err != nil {
+			log.Fatalf("Error looking up %s %s: %s", qname, qtype, err)
 		}
-		for _, root_address := range response.answer.Answer {
+		for _, root_address := range response.Answer {
 			switch root_address.(type) {
 			case *dns.AAAA:
 				aaaa_s := root_address.(*dns.AAAA).AAAA.String()
@@ -152,12 +102,11 @@ func lookup_root_server_addresses() map[string]bool {
 			}
 		}
 	}
-	close(questions)
 	return root_addresses
 }
 
-func ymmv_write(ip_family int, addr net.IP, query dns.Msg,
-	answer_time time.Time, answer dns.Msg) {
+func ymmv_write(ip_family int, addr net.IP,
+	query_time time.Time, query *dns.Msg, answer_time time.Time, answer *dns.Msg) {
 	// output magic value
 	_, err := os.Stdout.Write([]byte("ymmv"))
 	if err != nil {
@@ -188,8 +137,17 @@ func ymmv_write(ip_family int, addr net.IP, query dns.Msg,
 		log.Fatal(err)
 	}
 
-	// output when the query happened (we don't know, so use 0)
-	_, err = os.Stdout.Write([]byte{0, 0, 0, 0, 0, 0, 0, 0})
+	// output when the query happened
+	seconds := uint32(query_time.Unix())
+	err = binary.Write(os.Stdout, binary.BigEndian, seconds)
+	if err != nil {
+		log.Fatal(err)
+	}
+	nanoseconds := uint32(query_time.Nanosecond())
+	err = binary.Write(os.Stdout, binary.BigEndian, nanoseconds)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	// write the byte count of our query
 	query_bytes, err := query.Pack()
@@ -209,12 +167,12 @@ func ymmv_write(ip_family int, addr net.IP, query dns.Msg,
 	}
 
 	// output when the answer arrived
-	seconds := uint32(answer_time.Unix())
+	seconds = uint32(answer_time.Unix())
 	err = binary.Write(os.Stdout, binary.BigEndian, seconds)
 	if err != nil {
 		log.Fatal(err)
 	}
-	nanoseconds := uint32(answer_time.Nanosecond())
+	nanoseconds = uint32(answer_time.Nanosecond())
 	err = binary.Write(os.Stdout, binary.BigEndian, nanoseconds)
 	if err != nil {
 		log.Fatal(err)
@@ -243,26 +201,21 @@ func ymmv_write(ip_family int, addr net.IP, query dns.Msg,
 	}
 }
 
-func parse_query(raw_answer []byte) (*dns.Msg, *dns.Msg, error) {
-	// parse the query
-	answer := new(dns.Msg)
-	err := answer.Unpack(raw_answer)
-	if err != nil {
-		return nil, nil, err
+type sent_pkt_info struct {
+	when     time.Time
+	src_ip   net.IP
+	src_port uint16
+	dst_ip   net.IP
+	dst_port uint16
+	msg      *dns.Msg
+}
+
+func make_key(pi *sent_pkt_info, is_query bool) string {
+	if is_query {
+		return fmt.Sprintf("%s|%d|%s|%d|%d", pi.src_ip, pi.src_port, pi.dst_ip, pi.dst_port, pi.msg.Id)
+	} else {
+		return fmt.Sprintf("%s|%d|%s|%d|%d", pi.dst_ip, pi.dst_port, pi.src_ip, pi.src_port, pi.msg.Id)
 	}
-	answer.Id = 0
-	// infer the answer and build that
-	query := answer.Copy()
-	query.Response = false
-	query.Authoritative = false
-	query.Truncated = false
-	query.AuthenticatedData = true
-	query.CheckingDisabled = true
-	query.Rcode = 0
-	query.Answer = nil
-	query.Ns = nil
-	query.Extra = nil
-	return query, answer, nil
 }
 
 // Look in the named file and find any packets that are from our root
@@ -284,6 +237,8 @@ func pcap2ymmv(fname string, root_addresses map[string]bool) {
 		log.Fatal(err)
 	}
 
+	pkt_sent := make(map[string]*sent_pkt_info)
+
 	for {
 		// reach each packet
 		pkt_bytes, ci, err := pcap_file.ReadPacketData()
@@ -295,81 +250,118 @@ func pcap2ymmv(fname string, root_addresses map[string]bool) {
 			fmt.Fprintf(os.Stderr, "pcap2ymmv read packet (len:%d)\n", len(pkt_bytes))
 		}
 
-		// check for match against IP addresses that we care about
 		ip_match := false
 		var ip_family int
-		var ip_addr net.IP
-		var udp *layers.UDP
-		ipv6packet := gopacket.NewPacket(pkt_bytes, layers.LayerTypeIPv6, gopacket.Default)
-		var ipv6 *layers.IPv6
-		if ipv6packet != nil {
-			ipv6, _ = ipv6packet.Layer(layers.LayerTypeIPv6).(*layers.IPv6)
-			//			ipv6, _ = ipv6Layer.(*layers.IPv6)
+		var is_query bool
+		var pkt_info *sent_pkt_info
+
+		//  parse our packet information
+		packet := gopacket.NewPacket(pkt_bytes, pcap_file.LinkType(), gopacket.Default)
+		if packet == nil {
+			fmt.Fprintf(os.Stderr, "pcap2ymmv unable to parse packet\n")
+			continue
 		}
+
+		// filter based on our IP addresses
+		ipv6, _ := packet.Layer(layers.LayerTypeIPv6).(*layers.IPv6)
 		if ipv6 != nil {
-			if debug {
-				fmt.Fprintf(os.Stderr, "pcap2ymmv IPv6 %s\n", ipv6.SrcIP.String())
-			}
 			ip_family = 6
-			ip_addr = ipv6.SrcIP
-			_, ip_match = root_addresses[ipv6.SrcIP.String()]
-			if ip_match {
-				udp, _ = ipv6packet.Layer(layers.LayerTypeUDP).(*layers.UDP)
+			if debug {
+				fmt.Fprintf(os.Stderr, "pcap2ymmv IPv6 %s -> %s\n", ipv6.SrcIP, ipv6.DstIP)
+			}
+			pkt_info = &sent_pkt_info{when: ci.Timestamp, src_ip: ipv6.SrcIP, dst_ip: ipv6.DstIP}
+			// if the destination IP address is one of our targets, this is a query
+			is_query = true
+			_, ip_match = root_addresses[ipv6.DstIP.String()]
+			if !ip_match {
+				// if the source IP address is one of our targets, this is an answer
+				is_query = false
+				_, ip_match = root_addresses[ipv6.SrcIP.String()]
 			}
 		} else {
-			ipv4packet := gopacket.NewPacket(pkt_bytes, layers.LayerTypeIPv4, gopacket.Default)
-			var ipv4 *layers.IPv4
-			if ipv4packet != nil {
-				ipv4, _ = ipv4packet.Layer(layers.LayerTypeIPv4).(*layers.IPv4)
-				//				ipv4, _ = ipv4Layer.(*layers.IPv4)
+			ipv4, _ := packet.Layer(layers.LayerTypeIPv4).(*layers.IPv4)
+			if ipv4 == nil {
+				continue
 			}
-			if ipv4 != nil {
-				if debug {
-					fmt.Fprintf(os.Stderr, "pcap2ymmv IPv4 %s\n", ipv4.SrcIP.String())
-				}
-				ip_family = 4
-				ip_addr = ipv4.SrcIP
+			ip_family = 4
+			if debug {
+				fmt.Fprintf(os.Stderr, "pcap2ymmv IPv4 %s -> %s\n", ipv4.SrcIP.String(), ipv4.DstIP.String())
+			}
+			pkt_info = &sent_pkt_info{when: ci.Timestamp, src_ip: ipv4.SrcIP, dst_ip: ipv4.DstIP}
+			// if the destination IP address is one of our targets, this is a query
+			is_query = true
+			_, ip_match = root_addresses[ipv4.DstIP.String()]
+			if !ip_match {
+				// if the source IP address is one of our targets, this is an answer
+				is_query = false
 				_, ip_match = root_addresses[ipv4.SrcIP.String()]
-				if ip_match {
-					udp, _ = ipv4packet.Layer(layers.LayerTypeUDP).(*layers.UDP)
-				}
 			}
 		}
 		if debug {
-			fmt.Fprintf(os.Stderr, "pcap2ymmv IP match %t\n", ip_match)
+			fmt.Fprintf(os.Stderr, "pcap2ymmv IP match %t, query %t\n", ip_match, is_query)
 		}
 		if !ip_match {
 			continue
 		}
 
-		// if we were unable to parse the UDP for some reason, report it
+		// filter based on port 53
+		udp, _ := packet.Layer(layers.LayerTypeUDP).(*layers.UDP)
 		if udp == nil {
-			fmt.Fprintf(os.Stderr, "pcap2ymmv unable to parse UDP in packet from %s\n", ip_addr.String())
+			fmt.Fprintf(os.Stderr, "pcap2ymmv unable to parse UDP packet\n")
 			continue
 		}
-
-		// we only want port 53
 		if debug {
-			fmt.Fprintf(os.Stderr, "pcap2ymmv UDP port: %d\n", udp.SrcPort)
+			fmt.Fprintf(os.Stderr, "pcap2ymmv UDP port src:%d, dst:%d\n", udp.SrcPort, udp.DstPort)
 		}
-		if udp.SrcPort != 53 {
-			continue
+		if is_query {
+			if udp.DstPort != 53 {
+				continue
+			}
+		} else {
+			if udp.SrcPort != 53 {
+				continue
+			}
 		}
+		pkt_info.src_port = uint16(udp.SrcPort)
+		pkt_info.dst_port = uint16(udp.DstPort)
 
 		// if we got a valid IP and UDP packet, process it
 		if debug {
-			fmt.Fprintf(os.Stderr, "pcap2ymmv matched packet\n")
+			fmt.Fprintf(os.Stderr, "pcap2ymmv matched packet, is_query:%t\n", is_query)
 		}
 
-		// parse the payload as the DNS message
-		query, answer, err := parse_query(udp.Payload)
+		// parse the DNS packet
+		pkt_info.msg = new(dns.Msg)
+		err = pkt_info.msg.Unpack(udp.Payload)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "pcap2ymmv error unpacking DNS message: %s\n", err)
+			continue
+		}
+
+		// actually process the query
+		key := make_key(pkt_info, is_query)
+		if is_query {
+			pkt_sent[key] = pkt_info
 		} else {
-			ymmv_write(ip_family, ip_addr, *query, ci.Timestamp, *answer)
-			os.Stdout.Sync()
+			sent_pkt_info, ok := pkt_sent[key]
+			if ok {
+				ymmv_write(ip_family, pkt_info.src_ip,
+					sent_pkt_info.when, sent_pkt_info.msg, pkt_info.when, pkt_info.msg)
+				delete(pkt_sent, key)
+			} else {
+				fmt.Fprintf(os.Stderr, "reply without sent message %s\n", key)
+			}
+		}
+
+		// check packets and delete very old ones
+		for key, value := range pkt_sent {
+			if time.Since(value.when) > REPLY_TIMEOUT {
+				fmt.Fprintf(os.Stderr, "no reply in %s for sent message %s\n", time.Since(value.when), key)
+				delete(pkt_sent, key)
+			}
 		}
 	}
+
 	file.Close()
 }
 
