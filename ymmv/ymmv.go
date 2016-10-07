@@ -382,6 +382,9 @@ func skip_comparison(query *dns.Msg) bool {
 	if name == "id.server." {
 		return true
 	}
+	if name == "version.server." {
+		return true
+	}
 	if name == "hostname.bind." {
 		return true
 	}
@@ -663,12 +666,14 @@ func yeti_query(sync chan bool, srvs *yeti_server_set, clear_names bool, edns_si
 		yeti_resp, rtt, err := dnsstub.DnsQuery(server, iana_query)
 		if err != nil {
 			glog.Infof("Error querying Yeti root server %s @ %s; %s\n", target.ns_name, server, err)
+			// give a big penalty to our smoothed round-trip time (SRTT)
+			srvs.update_srtt(target.ip, time.Second)
 		} else {
 			//			result += compare_resp(iana_resp, yeti_resp)
 			compare_resp(iana_resp, yeti_resp)
+			// update our smoothed round-trip time (SRTT)
+			srvs.update_srtt(target.ip, rtt)
 		}
-		// update our smoothed round-trip time (SRTT)
-		srvs.update_srtt(target.ip, rtt)
 		glog.Flush()
 	}
 
