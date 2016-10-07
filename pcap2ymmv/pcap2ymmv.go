@@ -14,6 +14,8 @@ import (
 	"time"
 )
 
+const REPLY_TIMEOUT = time.Hour
+
 var (
 	// We store the configuration of our local resolver in a global
 	// variable for convenience.
@@ -348,6 +350,14 @@ func pcap2ymmv(fname string, root_addresses map[string]bool) {
 				delete(pkt_sent, key)
 			} else {
 				fmt.Fprintf(os.Stderr, "reply without sent message %s\n", key)
+			}
+		}
+
+		// check packets and delete very old ones
+		for key, value := range pkt_sent {
+			if time.Since(value.when) > REPLY_TIMEOUT {
+				fmt.Fprintf(os.Stderr, "no reply in %s for sent message %s\n", time.Since(value.when), key)
+				delete(pkt_sent, key)
 			}
 		}
 	}
