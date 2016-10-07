@@ -281,6 +281,9 @@ func pcap2ymmv(fname string, root_addresses map[string]bool) {
 		} else {
 			ipv4, _ := packet.Layer(layers.LayerTypeIPv4).(*layers.IPv4)
 			if ipv4 == nil {
+				if debug {
+					fmt.Fprintf(os.Stderr, "pcap2ymmv packet is neither IPv4 nor IPv6\n")
+				}
 				continue
 			}
 			ip_family = 4
