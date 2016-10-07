@@ -447,11 +447,6 @@ func compare_soa(iana_soa *dns.SOA, yeti_soa *dns.SOA) (result string) {
 }
 
 func compare_resp(iana *dns.Msg, yeti *dns.Msg) (result string) {
-	// shortcut comparison for some queries
-	if skip_comparison(iana) {
-		return "Skipping query\n"
-	}
-
 	result = ""
 	equivalent := true
 	if iana.Response != yeti.Response {
@@ -634,6 +629,15 @@ func SetOrChangeUDPSize(msg *dns.Msg, udpsize uint16) *dns.Msg {
 func yeti_query(sync chan bool, srvs *yeti_server_set, clear_names bool, edns_size uint16,
 	iana_query *dns.Msg, iana_resp *dns.Msg) {
 	org_qname := iana_query.Question[0].Name
+
+	// early exit if we are skipping this query
+	if skip_comparison(iana_query) {
+		glog.V(1).Infof("skipping query for %s %s",
+			org_qname, dns.TypeToString[iana_query.Question[0].Qtype])
+		sync <- true
+		return
+	}
+
 	var qname string
 	if clear_names {
 		qname = iana_query.Question[0].Name
