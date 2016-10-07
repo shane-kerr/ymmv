@@ -400,17 +400,16 @@ func skip_comparison(query *dns.Msg) bool {
 	return false
 }
 
-func compare_soa(iana_soa *dns.SOA, yeti_soa *dns.SOA) (result string) {
-	result = ""
-
+func compare_soa(iana_soa *dns.SOA, yeti_soa *dns.SOA) (diffs []string) {
 	if iana_soa == nil {
 		if yeti_soa != nil {
-			result += fmt.Sprintf("SOA only for Yeti: %s\n", yeti_soa)
+			diffs = append(diffs, fmt.Sprintf("SOA only for Yeti: %s", yeti_soa))
 		}
-		return result
+		return diffs
 	}
 	if yeti_soa == nil {
-		return fmt.Sprintf("SOA only for IANA: %s\n", iana_soa)
+		diffs = append(diffs, fmt.Sprintf("SOA only for IANA: %s", iana_soa))
+		return diffs
 	}
 
 	/*
@@ -426,64 +425,59 @@ func compare_soa(iana_soa *dns.SOA, yeti_soa *dns.SOA) (result string) {
 		}
 	*/
 	if iana_soa.Serial != yeti_soa.Serial {
-		result += fmt.Sprintf("IANA SOA serial: %d, Yeti SOA serial: %d\n",
-			iana_soa.Serial, yeti_soa.Serial)
+		diffs = append(diffs,
+			fmt.Sprintf("IANA SOA serial: %d, Yeti SOA serial: %d", iana_soa.Serial, yeti_soa.Serial))
 	}
 	if iana_soa.Refresh != yeti_soa.Refresh {
-		result += fmt.Sprintf("IANA SOA refresh: %d, Yeti SOA refresh: %d\n",
-			iana_soa.Refresh, yeti_soa.Refresh)
+		diffs = append(diffs,
+			fmt.Sprintf("IANA SOA refresh: %d, Yeti SOA refresh: %d", iana_soa.Refresh, yeti_soa.Refresh))
 	}
 	if iana_soa.Retry != yeti_soa.Retry {
-		result += fmt.Sprintf("IANA SOA retry: %d, Yeti SOA retry: %d\n",
-			iana_soa.Retry, yeti_soa.Retry)
+		diffs = append(diffs,
+			fmt.Sprintf("IANA SOA retry: %d, Yeti SOA retry: %d", iana_soa.Retry, yeti_soa.Retry))
 	}
 	if iana_soa.Expire != yeti_soa.Expire {
-		result += fmt.Sprintf("IANA SOA expiry: %d, Yeti SOA expiry: %d\n",
-			iana_soa.Expire, yeti_soa.Expire)
+		diffs = append(diffs,
+			fmt.Sprintf("IANA SOA expiry: %d, Yeti SOA expiry: %d", iana_soa.Expire, yeti_soa.Expire))
 	}
 	if iana_soa.Minttl != yeti_soa.Minttl {
-		result += fmt.Sprintf("IANA SOA negative TTL: %d, Yeti SOA negative TTL: %d\n",
-			iana_soa.Minttl, yeti_soa.Minttl)
+		diffs = append(diffs,
+			fmt.Sprintf("IANA SOA negative TTL: %d, Yeti SOA negative TTL: %d", iana_soa.Minttl, yeti_soa.Minttl))
 	}
 
-	return result
+	return diffs
 }
 
-func compare_resp(iana *dns.Msg, yeti *dns.Msg) (result string) {
-	result = ""
-	equivalent := true
+func compare_resp(iana *dns.Msg, yeti *dns.Msg) (diffs []string) {
 	if iana.Response != yeti.Response {
-		result += fmt.Sprintf("Response flag mismatch: IANA %s vs Yeti %s\n",
-			iana.Response, yeti.Response)
-		equivalent = false
+		diffs = append(diffs,
+			fmt.Sprintf("Response flag mismatch: IANA %s vs Yeti %s", iana.Response, yeti.Response))
 	}
 	if iana.Opcode != yeti.Opcode {
-		result += fmt.Sprintf("Opcode mismatch: IANA %s vs Yeti %s\n",
-			dns.OpcodeToString[iana.Opcode],
-			dns.OpcodeToString[yeti.Opcode])
-		equivalent = false
+		diffs = append(diffs,
+			fmt.Sprintf("Opcode mismatch: IANA %s vs Yeti %s",
+				dns.OpcodeToString[iana.Opcode], dns.OpcodeToString[yeti.Opcode]))
 	}
 	if iana.Authoritative != yeti.Authoritative {
-		result += fmt.Sprintf("Authoritative flag mismatch: IANA %t vs Yeti %t\n",
-			iana.Authoritative, yeti.Authoritative)
-		equivalent = false
+		diffs = append(diffs,
+			fmt.Sprintf("Authoritative flag mismatch: IANA %t vs Yeti %t",
+				iana.Authoritative, yeti.Authoritative))
 	}
 	// truncated... hmmm...
 	if iana.RecursionDesired != yeti.RecursionDesired {
-		result += fmt.Sprintf("Recursion desired flag mismatch: IANA %t vs Yeti %t\n",
-			iana.RecursionDesired, yeti.RecursionDesired)
-		equivalent = false
+		diffs = append(diffs,
+			fmt.Sprintf("Recursion desired flag mismatch: IANA %t vs Yeti %t",
+				iana.RecursionDesired, yeti.RecursionDesired))
 	}
 	if iana.RecursionAvailable != yeti.RecursionAvailable {
-		result += fmt.Sprintf("Recursion available flag mismatch: IANA %t vs Yeti %t\n",
-			strconv.FormatBool(iana.RecursionAvailable),
-			strconv.FormatBool(yeti.RecursionAvailable))
-		equivalent = false
+		diffs = append(diffs,
+			fmt.Sprintf("Recursion available flag mismatch: IANA %t vs Yeti %t",
+				strconv.FormatBool(iana.RecursionAvailable), strconv.FormatBool(yeti.RecursionAvailable)))
 	}
 	if iana.AuthenticatedData != yeti.AuthenticatedData {
-		result += fmt.Sprintf("Authenticated data flag mismatch: IANA %t vs Yeti %t\n",
-			iana.AuthenticatedData, yeti.AuthenticatedData)
-		equivalent = false
+		diffs = append(diffs,
+			fmt.Sprintf("Authenticated data flag mismatch: IANA %t vs Yeti %t",
+				iana.AuthenticatedData, yeti.AuthenticatedData))
 	}
 	// XXX: temporarily disabled
 	/*
@@ -494,75 +488,59 @@ func compare_resp(iana *dns.Msg, yeti *dns.Msg) (result string) {
 		}
 	*/
 	if iana.Rcode != yeti.Rcode {
-		result += fmt.Sprintf("Rcode mismatch: IANA %s vs Yeti %s\n",
-			dns.RcodeToString[iana.Rcode],
-			dns.RcodeToString[yeti.Rcode])
-		equivalent = false
+		diffs = append(diffs,
+			fmt.Sprintf("Rcode mismatch: IANA %s vs Yeti %s",
+				dns.RcodeToString[iana.Rcode], dns.RcodeToString[yeti.Rcode]))
 	}
 	sort.Sort(rr_sort(iana.Answer))
 	sort.Sort(rr_sort(yeti.Answer))
 	iana_only, yeti_only, iana_root_soa, yeti_root_soa := compare_section(iana.Answer, yeti.Answer)
 	if (len(iana_only) > 0) || (len(yeti_only) > 0) {
-		equivalent = false
 		if len(iana_only) > 0 {
-			result += fmt.Sprint("Answer section, IANA only\n")
 			for _, rr := range iana_only {
-				result += fmt.Sprintf("%s\n", rr)
+				diffs = append(diffs, fmt.Sprintf("Answer section, IANA only: %s", rr))
 			}
 		}
 		if len(yeti_only) > 0 {
-			result += fmt.Sprint("Answer section, Yeti only\n")
 			for _, rr := range yeti_only {
-				result += fmt.Sprintf("%s\n", rr)
+				diffs = append(diffs, fmt.Sprintf("Answer section, Yeti only: %s", rr))
 			}
 		}
 	}
-	result += compare_soa(iana_root_soa, yeti_root_soa)
+	diffs = append(diffs, compare_soa(iana_root_soa, yeti_root_soa)...)
 	sort.Sort(rr_sort(iana.Ns))
 	sort.Sort(rr_sort(yeti.Ns))
 	iana_only, yeti_only, iana_root_soa, yeti_root_soa = compare_section(iana.Ns, yeti.Ns)
 	if (len(iana_only) > 0) || (len(yeti_only) > 0) {
-		equivalent = false
 		if len(iana_only) > 0 {
-			result += fmt.Sprint("Authority section, IANA only\n")
 			for _, rr := range iana_only {
-				result += fmt.Sprintf("%s\n", rr)
+				diffs = append(diffs, fmt.Sprintf("Authority section, IANA only: %s", rr))
 			}
 		}
 		if len(yeti_only) > 0 {
-			result += fmt.Sprint("Authority section, Yeti only\n")
 			for _, rr := range yeti_only {
-				result += fmt.Sprintf("%s\n", rr)
+				diffs = append(diffs, fmt.Sprintf("Authority section, Yeti only: %s", rr))
 			}
 		}
 	}
-	result += compare_soa(iana_root_soa, yeti_root_soa)
+	diffs = append(diffs, compare_soa(iana_root_soa, yeti_root_soa)...)
 	sort.Sort(rr_sort(iana.Extra))
 	sort.Sort(rr_sort(yeti.Extra))
 	iana_only, yeti_only = compare_additional(iana.Extra, yeti.Extra)
 	if (len(iana_only) > 0) || (len(yeti_only) > 0) {
-		equivalent = false
 		if len(iana_only) > 0 {
-			result += fmt.Sprint("Additional section, IANA mismatch\n")
 			for _, rr := range iana_only {
-				result += fmt.Sprintf("%s\n", rr)
+				diffs = append(diffs, fmt.Sprintf("Additional section, IANA mismatch: %s", rr))
 			}
 		}
 		if len(yeti_only) > 0 {
-			result += fmt.Sprint("Additional section, Yeti mismatch\n")
 			for _, rr := range yeti_only {
-				result += fmt.Sprintf("%s\n", rr)
+				diffs = append(diffs, fmt.Sprintf("Additional section, Yeti mismatch: %s", rr))
 			}
 		}
 	}
 
-	if equivalent {
-		//		result += fmt.Print("Equivalent. Yay!\n")
-	} else {
-		//		result += fmt.Sprintf("---[ IANA ]----\n%s\n---[ Yeti ]----\n%s\n",
-		//			iana, yeti)
-	}
-	return result
+	return diffs
 }
 
 /*
@@ -632,11 +610,11 @@ func SetOrChangeUDPSize(msg *dns.Msg, udpsize uint16) *dns.Msg {
 func yeti_query(sync chan bool, srvs *yeti_server_set, clear_names bool, edns_size uint16,
 	iana_query *dns.Msg, iana_resp *dns.Msg) {
 	org_qname := iana_query.Question[0].Name
+	qtype := dns.TypeToString[iana_query.Question[0].Qtype]
 
 	// early exit if we are skipping this query
 	if skip_comparison(iana_query) {
-		glog.V(1).Infof("skipping query for %s %s",
-			org_qname, dns.TypeToString[iana_query.Question[0].Qtype])
+		glog.V(1).Infof("skipping query for %s %s", org_qname, qtype)
 		sync <- true
 		return
 	}
@@ -651,11 +629,7 @@ func yeti_query(sync chan bool, srvs *yeti_server_set, clear_names bool, edns_si
 		glog.V(2).Infof("using server selection %s @ %s", target.ns_name, target.ip)
 		server := "[" + target.ip.String() + "]:53"
 		glog.V(1).Infof("sending query '%s' %s as '%s' to %s @ %s\n",
-			org_qname,
-			dns.TypeToString[iana_query.Question[0].Qtype],
-			qname,
-			target.ns_name,
-			server)
+			org_qname, qtype, qname, target.ns_name, server)
 		// convert to our obfuscated name
 		iana_query.Question[0].Name = qname
 		// set our EDNS buffer size to a magic number
@@ -669,8 +643,11 @@ func yeti_query(sync chan bool, srvs *yeti_server_set, clear_names bool, edns_si
 			// give a big penalty to our smoothed round-trip time (SRTT)
 			srvs.update_srtt(target.ip, time.Second)
 		} else {
-			//			result += compare_resp(iana_resp, yeti_resp)
-			compare_resp(iana_resp, yeti_resp)
+			diffs := compare_resp(iana_resp, yeti_resp)
+			if len(diffs) > 0 {
+				glog.Infof("Differences in response for %s %s from %s @ %s\n",
+					org_qname, qtype, target.ns_name, server)
+			}
 			// update our smoothed round-trip time (SRTT)
 			srvs.update_srtt(target.ip, rtt)
 		}
