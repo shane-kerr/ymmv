@@ -609,7 +609,7 @@ func SetOrChangeUDPSize(msg *dns.Msg, udpsize uint16) *dns.Msg {
 }
 
 func yeti_query(sync chan bool, srvs *yeti_server_set,
-	clear_names bool, edns_size uint16, pf *perf_file,
+	clear_names bool, edns_size uint16, pf *daily_file, df *daily_file,
 	iana_query *dns.Msg, iana_resp *dns.Msg, iana_query_time time.Duration,
 	iana_ip *net.IP) {
 	org_qname := iana_query.Question[0].Name
@@ -677,8 +677,9 @@ func message_reader(output chan *ymmv_message) {
 	}
 }
 
-type perf_file struct {
+type daily_file struct {
 	name     string   // base file name
+	header   string   // header to put at the top of each file
 	last_day uint     // day we wrote to the file last, year*10000 + month*100 + day
 	writer   *os.File // current file we are writing to
 	lock     sync.Mutex
@@ -686,58 +687,59 @@ type perf_file struct {
 
 // roll to a new file if necessary
 // lock must be held before calling
-func (pf *perf_file) roll_perf_file() error {
+func (df *daily_file) roll_daily_file() error {
 	y, m, d := time.Now().UTC().Date()
 	this_day := uint((y * 10000) + (int(m) * 100) + d)
 
 	// if we are on a different day then when we wrote the last time
-	if this_day != pf.last_day {
-		pf.last_day = this_day
+	if this_day != df.last_day {
+		df.last_day = this_day
 
 		// close any previously open files
-		if pf.writer != nil {
-			err := pf.writer.Close()
+		if df.writer != nil {
+			err := df.writer.Close()
 			if err != nil {
 				return err
 			}
 		}
 
 		// open the new file
-		fname := fmt.Sprintf("%s.%4d-%2d-%2d.log", pf.name, y, m, d)
+		fname := fmt.Sprintf("%s.%4d-%2d-%2d.log", df.name, y, m, d)
 		var err error
-		pf.writer, err = os.OpenFile(fname, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0644)
+		df.writer, err = os.OpenFile(fname, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0644)
 		if err != nil {
 			return err
 		}
 		// write a header if the file is empty
-		fi, err := pf.writer.Stat()
+		fi, err := df.writer.Stat()
 		if err != nil {
 			return err
 		}
 		if fi.Size() == 0 {
-			fmt.Fprintln(pf.writer, "#              time, iana_rtt, yeti_rtt,            iana_root,                           yeti_root,       qtype, qname")
+			fmt.Fprintln(df.writer, df.header)
 		}
 	}
 	return nil
 }
 
-func open_perf_file(name string) (*perf_file, error) {
-	pf := new(perf_file)
-	pf.name = name
-	err := pf.roll_perf_file()
+func open_daily_file(name string, header string) (*daily_file, error) {
+	df := new(daily_file)
+	df.name = name
+	df.header = header
+	err := df.roll_daily_file()
 	if err != nil {
 		return nil, err
 	}
-	return pf, nil
+	return df, nil
 }
 
-func (pf *perf_file) write_perf(qname string, qtype string,
+func (pf *daily_file) write_perf(qname string, qtype string,
 	iana_time time.Duration, yeti_time time.Duration, iana_ip *net.IP, yeti_ip *net.IP) {
 
 	pf.lock.Lock()
 	defer pf.lock.Unlock()
 
-	err := pf.roll_perf_file()
+	err := pf.roll_daily_file()
 	if err != nil {
 		glog.Fatalf("Error rolling performance file %s", err)
 	}
@@ -746,6 +748,31 @@ func (pf *perf_file) write_perf(qname string, qtype string,
 		time.Now().UTC().Format("2006-01-02T15:04:05"),
 		iana_time.Seconds(), yeti_time.Seconds(), iana_ip, yeti_ip, qtype, qname)
 	pf.writer.Sync()
+}
+
+func (df *daily_file) write_diffs(qname string, qtype string,
+	iana_ip *net.IP, yeti_ip *net.IP, diffs []string) {
+
+	df.lock.Lock()
+	defer df.lock.Unlock()
+
+	err := df.roll_daily_file()
+	if err != nil {
+		glog.Fatalf("Error rolling differences file %s", err)
+	}
+
+	fmt.Fprintln(df.writer,
+		"================================================================================")
+	fmt.Fprintf(df.writer, "%s\n", time.Now().UTC().Format("2006-01-02T15:04:05"))
+	fmt.Fprintf(df.writer, "qname: %s\n", qname)
+	fmt.Fprintf(df.writer, "qtype: %s\n", qtype)
+	fmt.Fprintf(df.writer, "IANA IP: %s\n", iana_ip)
+	fmt.Fprintf(df.writer, "Yeti IP: %s\n", yeti_ip)
+	fmt.Fprintln(df.writer, "----------------------------------------")
+	for _, diff := range diffs {
+		fmt.Fprintln(df.writer, "%s\n", diff)
+	}
+	df.writer.Sync()
 }
 
 // Main function.
@@ -758,7 +785,9 @@ func main() {
 	select_alg := flag.String("a", "rtt",
 		"set server-selection algorithm, either rtt, round-robin, random, or all")
 	perf_file_name := flag.String("p", "",
-		"base file name to store performance comparison in (default no comparison)")
+		"base file name to store performance comparison in (default none)")
+	diff_file_name := flag.String("d", "",
+		"base file name to store difference details in (default none)")
 	flag.Parse()
 	var ips []net.IP
 	args := flag.Args()
@@ -799,12 +828,25 @@ func main() {
 	}
 
 	// open our performance file, if specified
-	var perf_file *perf_file
+	var perf_file *daily_file
 	if *perf_file_name != "" {
 		var err error
-		perf_file, err = open_perf_file(*perf_file_name)
+		header := "#              time, iana_rtt, yeti_rtt,            iana_root,                           yeti_root,       qtype, qname"
+		perf_file, err = open_daily_file(*perf_file_name, header)
 		if err != nil {
 			fmt.Printf("Error opening performance file '%s': %s\n", perf_file_name, err)
+			os.Exit(1)
+		}
+	}
+
+	// open our differences file, if specified
+	var diff_file *daily_file
+	if *diff_file_name != "" {
+		var err error
+		header := ""
+		diff_file, err = open_daily_file(*diff_file_name, header)
+		if err != nil {
+			fmt.Printf("Error opening differences file '%s': %s\n", diff_file_name, err)
 			os.Exit(1)
 		}
 	}
@@ -831,8 +873,8 @@ func main() {
 			if y == nil {
 				break
 			}
-			go yeti_query(query_sync, servers, *clear_names, uint16(*edns_size), perf_file,
-				y.query, y.answer, y.answer_time.Sub(y.query_time), y.addr)
+			go yeti_query(query_sync, servers, *clear_names, uint16(*edns_size),
+				perf_file, diff_file, y.query, y.answer, y.answer_time.Sub(y.query_time), y.addr)
 			query_count += 1
 		// comparison done
 		case <-query_sync:
