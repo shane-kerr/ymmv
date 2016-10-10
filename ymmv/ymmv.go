@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -607,8 +608,10 @@ func SetOrChangeUDPSize(msg *dns.Msg, udpsize uint16) *dns.Msg {
 	return msg
 }
 
-func yeti_query(sync chan bool, srvs *yeti_server_set, clear_names bool, edns_size uint16,
-	iana_query *dns.Msg, iana_resp *dns.Msg) {
+func yeti_query(sync chan bool, srvs *yeti_server_set,
+	clear_names bool, edns_size uint16, pf *perf_file,
+	iana_query *dns.Msg, iana_resp *dns.Msg, iana_query_time time.Duration,
+	iana_ip *net.IP) {
 	org_qname := iana_query.Question[0].Name
 	qtype := dns.TypeToString[iana_query.Question[0].Qtype]
 
@@ -641,12 +644,16 @@ func yeti_query(sync chan bool, srvs *yeti_server_set, clear_names bool, edns_si
 		if err != nil {
 			glog.Infof("Error querying Yeti root server %s @ %s; %s\n", target.ns_name, server, err)
 			// give a big penalty to our smoothed round-trip time (SRTT)
-			srvs.update_srtt(target.ip, time.Second)
+			srvs.update_srtt(target.ip, time.Second/2)
 		} else {
 			diffs := compare_resp(iana_resp, yeti_resp)
 			if len(diffs) > 0 {
 				glog.Infof("Differences in response for %s %s from %s @ %s\n",
 					org_qname, qtype, target.ns_name, server)
+			}
+			// record our performance difference, if desired
+			if pf != nil {
+				pf.write_perf(org_qname, qtype, iana_query_time, rtt, iana_ip, &target.ip)
 			}
 			// update our smoothed round-trip time (SRTT)
 			srvs.update_srtt(target.ip, rtt)
@@ -670,6 +677,77 @@ func message_reader(output chan *ymmv_message) {
 	}
 }
 
+type perf_file struct {
+	name     string   // base file name
+	last_day uint     // day we wrote to the file last, year*10000 + month*100 + day
+	writer   *os.File // current file we are writing to
+	lock     sync.Mutex
+}
+
+// roll to a new file if necessary
+// lock must be held before calling
+func (pf *perf_file) roll_perf_file() error {
+	y, m, d := time.Now().UTC().Date()
+	this_day := uint((y * 10000) + (int(m) * 100) + d)
+
+	// if we are on a different day then when we wrote the last time
+	if this_day != pf.last_day {
+		pf.last_day = this_day
+
+		// close any previously open files
+		if pf.writer != nil {
+			err := pf.writer.Close()
+			if err != nil {
+				return err
+			}
+		}
+
+		// open the new file
+		fname := fmt.Sprintf("%s.%4d-%2d-%2d.log", pf.name, y, m, d)
+		var err error
+		pf.writer, err = os.OpenFile(fname, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0644)
+		if err != nil {
+			return err
+		}
+		// write a header if the file is empty
+		fi, err := pf.writer.Stat()
+		if err != nil {
+			return err
+		}
+		if fi.Size() == 0 {
+			fmt.Fprintln(pf.writer, "#              time, iana_rtt, yeti_rtt,            iana_root,                           yeti_root,       qtype, qname")
+		}
+	}
+	return nil
+}
+
+func open_perf_file(name string) (*perf_file, error) {
+	pf := new(perf_file)
+	pf.name = name
+	err := pf.roll_perf_file()
+	if err != nil {
+		return nil, err
+	}
+	return pf, nil
+}
+
+func (pf *perf_file) write_perf(qname string, qtype string,
+	iana_time time.Duration, yeti_time time.Duration, iana_ip *net.IP, yeti_ip *net.IP) {
+
+	pf.lock.Lock()
+	defer pf.lock.Unlock()
+
+	err := pf.roll_perf_file()
+	if err != nil {
+		glog.Fatalf("Error rolling performance file %s", err)
+	}
+
+	fmt.Fprintf(pf.writer, "%s, %6.6f, %6.6f, %20s, %35s, %11s, %s\n",
+		time.Now().UTC().Format("2006-01-02T15:04:05"),
+		iana_time.Seconds(), yeti_time.Seconds(), iana_ip, yeti_ip, qtype, qname)
+	pf.writer.Sync()
+}
+
 // Main function.
 func main() {
 	clear_names := flag.Bool("c", false, "use non-obfuscated (clear) query names")
@@ -679,6 +757,8 @@ func main() {
 		"set EDNS0 buffer size (set to 0 to use original query size)")
 	select_alg := flag.String("a", "rtt",
 		"set server-selection algorithm, either rtt, round-robin, random, or all")
+	perf_file_name := flag.String("p", "",
+		"base file name to store performance comparison in (default no comparison)")
 	flag.Parse()
 	var ips []net.IP
 	args := flag.Args()
@@ -718,6 +798,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	// open our performance file, if specified
+	var perf_file *perf_file
+	if *perf_file_name != "" {
+		var err error
+		perf_file, err = open_perf_file(*perf_file_name)
+		if err != nil {
+			fmt.Printf("Error opening performance file '%s': %s\n", perf_file_name, err)
+			os.Exit(1)
+		}
+	}
+
 	// start a goroutine to read our input
 	messages := make(chan *ymmv_message)
 	go message_reader(messages)
@@ -740,7 +831,8 @@ func main() {
 			if y == nil {
 				break
 			}
-			go yeti_query(query_sync, servers, *clear_names, uint16(*edns_size), y.query, y.answer)
+			go yeti_query(query_sync, servers, *clear_names, uint16(*edns_size), perf_file,
+				y.query, y.answer, y.answer_time.Sub(y.query_time), y.addr)
 			query_count += 1
 		// comparison done
 		case <-query_sync:
