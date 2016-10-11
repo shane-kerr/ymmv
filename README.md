@@ -120,11 +120,92 @@ You can see these options via `ymmv -h`:
     Usage of ./ymmv:
       -a string
             set server-selection algorithm, either rtt, round-robin, random, or all (default "rtt")
+      -alsologtostderr
+            log to standard error as well as files
       -c    use non-obfuscated (clear) query names
+      -d string
+            base file name to store difference details in (default none)
       -e uint
             set EDNS0 buffer size (set to 0 to use original query size) (default 4093)
+      -log_backtrace_at value
+            when logging hits line file:N, emit a stack trace
+      -log_dir string
+            If non-empty, write log files in this directory
+      -logtostderr
+            log to standard error instead of files
+      -p string
+            base file name to store performance comparison in (default none)
       -s string
             secret for obfuscated query names, hex-encoded (default random-generated)
+      -stderrthreshold value
+            logs at or above this threshold go to stderr
+      -v value
+            log level for V logs
+      -vmodule value
+            comma-separated list of pattern=N settings for file-filtered logging
+
+### Comparing Query Times
+
+The `ymmv` program can be used to compare performance between IANA
+root servers and Yeti root servers.
+
+Using the `-p` flag tells the program to log each query times to a
+file. The file name contains the date added to the name. So if we used
+`-p ymmv-perf` for the flag, we would get files like:
+
+    ymmv-perf.2016-10-09.log
+    ymmv-perf.2016-10-10.log
+    ymmv-perf.2016-10-11.log
+
+The contents of each file look something like this:
+
+```
+#              time, iana_rtt, yeti_rtt,            iana_root,                           yeti_root,       qtype, qname
+2016-10-11T00:31:23, 0.022854, 0.192096,          199.7.83.42,                2001:e30:1c1e:1::333,           A, wlan1.
+2016-10-11T00:32:55, 0.001481, 0.009405,          192.5.5.241,              2a02:990:100:b01::53:0,           A, be.
+2016-10-11T00:32:57, 0.110079, 0.255293,         192.112.36.4,                  2001:e30:187d::333,           A, be.
+2016-10-11T00:32:58, 0.001709, 0.011197,        192.58.128.30,            2001:1608:10:167:32e::53,           A, me.
+2016-10-11T00:32:58, 0.001919, 0.015572,        192.36.148.17,            2001:1608:10:167:32e::53,           A, us.
+2016-10-11T00:32:58, 0.085999, 0.011112,        198.97.190.53,                  2001:67c:217c:6::2,           A, us.
+2016-10-11T00:32:58, 0.206600, 0.010914,       192.203.230.10,                  2001:67c:217c:6::2,           A, me.
+2016-10-11T00:33:02, 0.080698, 0.023102,          199.7.91.13, 2001:4b98:dc2:45:216:3eff:fe4b:8c5b,           A, ch.
+```
+
+The file contains comma-separated values (CSV), one per line. You see
+the time the query was made, the time it took for the IANA root server
+to reply, the time it took the Yeti root server to reply, and finally
+the query type and name.
+
+### Recording Differences
+
+The `ymmv` program can record the differences in the answers that
+the IANA root servers and the Yeti root servers give.
+
+Using the `-d` flag tells the program to log each query times to a
+file. The file name contains the date added to the name. So if we used
+`-d ymmv-diff` for the flag, we would get files like:
+
+    ymmv-diff.2016-10-09.log
+    ymmv-diff.2016-10-10.log
+    ymmv-diff.2016-10-11.log
+
+The contents of each file look something like this:
+
+```
+================================================================================
+2016-10-11T10:06:17
+qname: example.net
+qtype: A
+IANA IP: 199.7.83.42
+Yeti IP: 2001:e30:1c1e:1::333
+----------------------------------------
+SOA only for Yeti:  . 86400 IN SOA www.yeti-dns.org. hostmaster.yeti-dns.org. 2016101100 1800 900 604800 86400
+```
+
+The '====' line starts each set of differences, and is followed by
+information about the query. The '----' line starts the section of
+differences, which are one per line. There may be any number of
+differences discovered in a single query.
 
 ### Server Selection Algorithm
 
@@ -189,6 +270,37 @@ it easier to spot use of `ymmv` on the authoritative side. You can use
 the `-e` flag to set this to some other value. A value of 0 means to
 use the EDNS buffer size of the original query.
 
+### Logging Details
+
+The following flags control details about the logging output:
+
+      -alsologtostderr
+            log to standard error as well as files
+      -log_backtrace_at value
+            when logging hits line file:N, emit a stack trace
+      -log_dir string
+            If non-empty, write log files in this directory
+      -logtostderr
+            log to standard error instead of files
+      -stderrthreshold value
+            logs at or above this threshold go to stderr
+      -v value
+            log level for V logs
+      -vmodule value
+            comma-separated list of pattern=N settings for file-filtered logging
+
+These are all added by the Go `glog` package, and most have the
+expected usage. The `-v` flag may be confusing, as the normal practice
+of adding just `-v` or multiple `-v` is not supported.  Instead you
+specify the debugging logging level, like `-v 1` or `-v 2`. Higher
+numbers mean more logging output.
+
+By default log files are placed in `/tmp` and are named something like
+`ymmv.${hostname}.${login}.log.INFO.${date_time}.${pid}` and
+`ymmv.${hostname}.${login}.log.WARNING.${date_time}.${pid}`. A
+symbolic link is made from `ymmv.INFO` and `ymmv.WARNING` to the
+latest version.
+
 Limitations
 ===========
 There are several limitations right now, being worked on:
@@ -203,5 +315,3 @@ streams.
 * No easy way exists to report differences found back to the Yeti
   operators. This will be added as an opt-in "--email-to" command-line
   option.
-
-* Missing verbose flags to help debugging.
