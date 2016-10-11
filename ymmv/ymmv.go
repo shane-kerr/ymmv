@@ -386,6 +386,9 @@ func skip_comparison(query *dns.Msg) bool {
 	if name == "version.server." {
 		return true
 	}
+	if name == "version.bind." {
+		return true
+	}
 	if name == "hostname.bind." {
 		return true
 	}
