@@ -7,10 +7,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/golang/glog"
 	"github.com/miekg/dns"
 	"github.com/shane-kerr/ymmv/dnsstub"
 	"io"
-	"log"
 	"math/rand"
 	"net"
 	"os"
@@ -18,20 +18,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
-
-// debug output
-type debug_flag bool
-
-var dbg debug_flag = true
-var dbg_log *log.Logger = log.New(os.Stderr, "DEBUG ", log.Lmicroseconds|log.LUTC)
-
-func (dbg debug_flag) Printf(format string, args ...interface{}) {
-	if dbg {
-		dbg_log.Printf(format, args...)
-	}
-}
 
 type ymmv_message struct {
 	ip_family   byte
@@ -64,8 +53,7 @@ func (y ymmv_message) print() {
 	} else {
 		protocol_str = "TCP"
 	}
-	header := fmt.Sprintf("===[ ymmv message (IPv%d, %s, %s) ]",
-		y.ip_family, protocol_str, y.addr)
+	header := fmt.Sprintf("===[ ymmv message (IPv%d, %s, %s) ]", y.ip_family, protocol_str, y.addr)
 	fmt.Printf("%s\n", PadRight(header, 78, "="))
 	fmt.Printf("%s\n", y.query)
 	if y.query_time.Unix() == 0 {
@@ -113,8 +101,7 @@ func read_next_message() (y *ymmv_message, err error) {
 	} else if tmp_ip_family[0] == '6' {
 		ip_family = 6
 	} else {
-		errmsg := fmt.Sprintf("Expecting '4' or '6' for IP family, got '%s'",
-			tmp_ip_family)
+		errmsg := fmt.Sprintf("Expecting '4' or '6' for IP family, got '%s'", tmp_ip_family)
 		return nil, errors.New(errmsg)
 	}
 
@@ -127,8 +114,7 @@ func read_next_message() (y *ymmv_message, err error) {
 		return nil, errors.New("Couldn't read TCP or UDP")
 	}
 	if (protocol[0] != 'u') && (protocol[0] != 't') {
-		errmsg := fmt.Sprintf("Expecting 't'cp or 'u'dp for protocol, got '%s'",
-			protocol)
+		errmsg := fmt.Sprintf("Expecting 't'cp or 'u'dp for protocol, got '%s'", protocol)
 		return nil, errors.New(errmsg)
 	}
 
@@ -144,8 +130,7 @@ func read_next_message() (y *ymmv_message, err error) {
 		return nil, err
 	}
 	if nread != cap(tmp_addr) {
-		errmsg := fmt.Sprintf("Only read %d of %d bytes of address",
-			nread, cap(tmp_addr))
+		errmsg := fmt.Sprintf("Only read %d of %d bytes of address", nread, cap(tmp_addr))
 		return nil, errors.New(errmsg)
 	}
 	addr := net.IP(tmp_addr)
@@ -394,12 +379,20 @@ func skip_comparison(query *dns.Msg) bool {
 	if name == "." {
 		return true
 	}
+	// skip queries for server information
 	if name == "id.server." {
+		return true
+	}
+	if name == "version.server." {
+		return true
+	}
+	if name == "version.bind." {
 		return true
 	}
 	if name == "hostname.bind." {
 		return true
 	}
+	// the IANA servers are authoritative for ROOT-SERVERS.NET, we are not
 	if strings.HasSuffix(name, ".root-servers.net.") {
 		return true
 	}
@@ -411,17 +404,16 @@ func skip_comparison(query *dns.Msg) bool {
 	return false
 }
 
-func compare_soa(iana_soa *dns.SOA, yeti_soa *dns.SOA) (result string) {
-	result = ""
-
+func compare_soa(iana_soa *dns.SOA, yeti_soa *dns.SOA) (diffs []string) {
 	if iana_soa == nil {
 		if yeti_soa != nil {
-			result += fmt.Sprintf("SOA only for Yeti: %s\n", yeti_soa)
+			diffs = append(diffs, fmt.Sprintf("SOA only for Yeti: %s", yeti_soa))
 		}
-		return result
+		return diffs
 	}
 	if yeti_soa == nil {
-		return fmt.Sprintf("SOA only for IANA: %s\n", iana_soa)
+		diffs = append(diffs, fmt.Sprintf("SOA only for IANA: %s", iana_soa))
+		return diffs
 	}
 
 	/*
@@ -437,69 +429,59 @@ func compare_soa(iana_soa *dns.SOA, yeti_soa *dns.SOA) (result string) {
 		}
 	*/
 	if iana_soa.Serial != yeti_soa.Serial {
-		result += fmt.Sprintf("IANA SOA serial: %d, Yeti SOA serial: %d\n",
-			iana_soa.Serial, yeti_soa.Serial)
+		diffs = append(diffs,
+			fmt.Sprintf("IANA SOA serial: %d, Yeti SOA serial: %d", iana_soa.Serial, yeti_soa.Serial))
 	}
 	if iana_soa.Refresh != yeti_soa.Refresh {
-		result += fmt.Sprintf("IANA SOA refresh: %d, Yeti SOA refresh: %d\n",
-			iana_soa.Refresh, yeti_soa.Refresh)
+		diffs = append(diffs,
+			fmt.Sprintf("IANA SOA refresh: %d, Yeti SOA refresh: %d", iana_soa.Refresh, yeti_soa.Refresh))
 	}
 	if iana_soa.Retry != yeti_soa.Retry {
-		result += fmt.Sprintf("IANA SOA retry: %d, Yeti SOA retry: %d\n",
-			iana_soa.Retry, yeti_soa.Retry)
+		diffs = append(diffs,
+			fmt.Sprintf("IANA SOA retry: %d, Yeti SOA retry: %d", iana_soa.Retry, yeti_soa.Retry))
 	}
 	if iana_soa.Expire != yeti_soa.Expire {
-		result += fmt.Sprintf("IANA SOA expiry: %d, Yeti SOA expiry: %d\n",
-			iana_soa.Expire, yeti_soa.Expire)
+		diffs = append(diffs,
+			fmt.Sprintf("IANA SOA expiry: %d, Yeti SOA expiry: %d", iana_soa.Expire, yeti_soa.Expire))
 	}
 	if iana_soa.Minttl != yeti_soa.Minttl {
-		result += fmt.Sprintf("IANA SOA negative TTL: %d, Yeti SOA negative TTL: %d\n",
-			iana_soa.Minttl, yeti_soa.Minttl)
+		diffs = append(diffs,
+			fmt.Sprintf("IANA SOA negative TTL: %d, Yeti SOA negative TTL: %d", iana_soa.Minttl, yeti_soa.Minttl))
 	}
 
-	return result
+	return diffs
 }
 
-func compare_resp(iana *dns.Msg, yeti *dns.Msg) (result string) {
-	// shortcut comparison for some queries
-	if skip_comparison(iana) {
-		return "Skipping query\n"
-	}
-
-	result = ""
-	equivalent := true
+func compare_resp(iana *dns.Msg, yeti *dns.Msg) (diffs []string) {
 	if iana.Response != yeti.Response {
-		result += fmt.Sprintf("Response flag mismatch: IANA %s vs Yeti %s\n",
-			iana.Response, yeti.Response)
-		equivalent = false
+		diffs = append(diffs,
+			fmt.Sprintf("Response flag mismatch: IANA %s vs Yeti %s", iana.Response, yeti.Response))
 	}
 	if iana.Opcode != yeti.Opcode {
-		result += fmt.Sprintf("Opcode mismatch: IANA %s vs Yeti %s\n",
-			dns.OpcodeToString[iana.Opcode],
-			dns.OpcodeToString[yeti.Opcode])
-		equivalent = false
+		diffs = append(diffs,
+			fmt.Sprintf("Opcode mismatch: IANA %s vs Yeti %s",
+				dns.OpcodeToString[iana.Opcode], dns.OpcodeToString[yeti.Opcode]))
 	}
 	if iana.Authoritative != yeti.Authoritative {
-		result += fmt.Sprintf("Authoritative flag mismatch: IANA %t vs Yeti %t\n",
-			iana.Authoritative, yeti.Authoritative)
-		equivalent = false
+		diffs = append(diffs,
+			fmt.Sprintf("Authoritative flag mismatch: IANA %t vs Yeti %t",
+				iana.Authoritative, yeti.Authoritative))
 	}
 	// truncated... hmmm...
 	if iana.RecursionDesired != yeti.RecursionDesired {
-		result += fmt.Sprintf("Recursion desired flag mismatch: IANA %t vs Yeti %t\n",
-			iana.RecursionDesired, yeti.RecursionDesired)
-		equivalent = false
+		diffs = append(diffs,
+			fmt.Sprintf("Recursion desired flag mismatch: IANA %t vs Yeti %t",
+				iana.RecursionDesired, yeti.RecursionDesired))
 	}
 	if iana.RecursionAvailable != yeti.RecursionAvailable {
-		result += fmt.Sprintf("Recursion available flag mismatch: IANA %t vs Yeti %t\n",
-			strconv.FormatBool(iana.RecursionAvailable),
-			strconv.FormatBool(yeti.RecursionAvailable))
-		equivalent = false
+		diffs = append(diffs,
+			fmt.Sprintf("Recursion available flag mismatch: IANA %t vs Yeti %t",
+				strconv.FormatBool(iana.RecursionAvailable), strconv.FormatBool(yeti.RecursionAvailable)))
 	}
 	if iana.AuthenticatedData != yeti.AuthenticatedData {
-		result += fmt.Sprintf("Authenticated data flag mismatch: IANA %t vs Yeti %t\n",
-			iana.AuthenticatedData, yeti.AuthenticatedData)
-		equivalent = false
+		diffs = append(diffs,
+			fmt.Sprintf("Authenticated data flag mismatch: IANA %t vs Yeti %t",
+				iana.AuthenticatedData, yeti.AuthenticatedData))
 	}
 	// XXX: temporarily disabled
 	/*
@@ -510,75 +492,59 @@ func compare_resp(iana *dns.Msg, yeti *dns.Msg) (result string) {
 		}
 	*/
 	if iana.Rcode != yeti.Rcode {
-		result += fmt.Sprintf("Rcode mismatch: IANA %s vs Yeti %s\n",
-			dns.RcodeToString[iana.Rcode],
-			dns.RcodeToString[yeti.Rcode])
-		equivalent = false
+		diffs = append(diffs,
+			fmt.Sprintf("Rcode mismatch: IANA %s vs Yeti %s",
+				dns.RcodeToString[iana.Rcode], dns.RcodeToString[yeti.Rcode]))
 	}
 	sort.Sort(rr_sort(iana.Answer))
 	sort.Sort(rr_sort(yeti.Answer))
 	iana_only, yeti_only, iana_root_soa, yeti_root_soa := compare_section(iana.Answer, yeti.Answer)
 	if (len(iana_only) > 0) || (len(yeti_only) > 0) {
-		equivalent = false
 		if len(iana_only) > 0 {
-			result += fmt.Sprint("Answer section, IANA only\n")
 			for _, rr := range iana_only {
-				result += fmt.Sprintf("%s\n", rr)
+				diffs = append(diffs, fmt.Sprintf("Answer section, IANA only: %s", rr))
 			}
 		}
 		if len(yeti_only) > 0 {
-			result += fmt.Sprint("Answer section, Yeti only\n")
 			for _, rr := range yeti_only {
-				result += fmt.Sprintf("%s\n", rr)
+				diffs = append(diffs, fmt.Sprintf("Answer section, Yeti only: %s", rr))
 			}
 		}
 	}
-	result += compare_soa(iana_root_soa, yeti_root_soa)
+	diffs = append(diffs, compare_soa(iana_root_soa, yeti_root_soa)...)
 	sort.Sort(rr_sort(iana.Ns))
 	sort.Sort(rr_sort(yeti.Ns))
 	iana_only, yeti_only, iana_root_soa, yeti_root_soa = compare_section(iana.Ns, yeti.Ns)
 	if (len(iana_only) > 0) || (len(yeti_only) > 0) {
-		equivalent = false
 		if len(iana_only) > 0 {
-			result += fmt.Sprint("Authority section, IANA only\n")
 			for _, rr := range iana_only {
-				result += fmt.Sprintf("%s\n", rr)
+				diffs = append(diffs, fmt.Sprintf("Authority section, IANA only: %s", rr))
 			}
 		}
 		if len(yeti_only) > 0 {
-			result += fmt.Sprint("Authority section, Yeti only\n")
 			for _, rr := range yeti_only {
-				result += fmt.Sprintf("%s\n", rr)
+				diffs = append(diffs, fmt.Sprintf("Authority section, Yeti only: %s", rr))
 			}
 		}
 	}
-	result += compare_soa(iana_root_soa, yeti_root_soa)
+	diffs = append(diffs, compare_soa(iana_root_soa, yeti_root_soa)...)
 	sort.Sort(rr_sort(iana.Extra))
 	sort.Sort(rr_sort(yeti.Extra))
 	iana_only, yeti_only = compare_additional(iana.Extra, yeti.Extra)
 	if (len(iana_only) > 0) || (len(yeti_only) > 0) {
-		equivalent = false
 		if len(iana_only) > 0 {
-			result += fmt.Sprint("Additional section, IANA mismatch\n")
 			for _, rr := range iana_only {
-				result += fmt.Sprintf("%s\n", rr)
+				diffs = append(diffs, fmt.Sprintf("Additional section, IANA mismatch: %s", rr))
 			}
 		}
 		if len(yeti_only) > 0 {
-			result += fmt.Sprint("Additional section, Yeti mismatch\n")
 			for _, rr := range yeti_only {
-				result += fmt.Sprintf("%s\n", rr)
+				diffs = append(diffs, fmt.Sprintf("Additional section, Yeti mismatch: %s", rr))
 			}
 		}
 	}
 
-	if equivalent {
-		//		result += fmt.Print("Equivalent. Yay!\n")
-	} else {
-		//		result += fmt.Sprintf("---[ IANA ]----\n%s\n---[ Yeti ]----\n%s\n",
-		//			iana, yeti)
-	}
-	return result
+	return diffs
 }
 
 /*
@@ -613,14 +579,14 @@ func obfuscate_query(qname_in string) (qname_out string) {
 		obfuscate_secret = make([]byte, 8, 8)
 		nread, err := rand.Read(obfuscate_secret)
 		if err != nil {
-			log.Fatalf("Error generating random obfuscation secret: %s", err)
+			glog.Fatalf("Error generating random obfuscation secret: %s", err)
 		}
 		if nread != 8 {
-			log.Fatalf("Read %d bytes for random obfuscation secret, wanted 8", nread)
+			glog.Fatalf("Read %d bytes for random obfuscation secret, wanted 8", nread)
 		}
 		hex_output := make([]byte, 16, 16)
 		hex.Encode(hex_output, obfuscate_secret)
-		log.Printf("generated random obfuscation secret %s", strings.ToUpper(string(hex_output)))
+		glog.Infof("generated random obfuscation secret %s", strings.ToUpper(string(hex_output)))
 	}
 	hash_input := append(obfuscate_secret, []byte(strings.ToLower(strings.Join(labels, ".")))...)
 	hashed := sha256.Sum256(hash_input)
@@ -629,7 +595,7 @@ func obfuscate_query(qname_in string) (qname_out string) {
 	qname_out = "ymmv." + string(hashed_hex[0:16]) + "."
 	qname_out += strings.ToLower(strings.Join(labels[len(labels)-1:len(labels)], ".")) + "."
 
-	dbg.Printf("obfuscated %s to %s", qname_in, qname_out)
+	glog.V(2).Infof("obfuscated %s to %s", qname_in, qname_out)
 	return qname_out
 }
 
@@ -645,26 +611,31 @@ func SetOrChangeUDPSize(msg *dns.Msg, udpsize uint16) *dns.Msg {
 	return msg
 }
 
-func yeti_query(srvs *yeti_server_set, clear_names bool, edns_size uint16,
-	iana_query *dns.Msg, iana_resp *dns.Msg,
-	output chan string) {
-	result := ""
+func yeti_query(sync chan bool, srvs *yeti_server_set,
+	clear_names bool, edns_size uint16, pf *daily_file, df *daily_file,
+	iana_query *dns.Msg, iana_resp *dns.Msg, iana_query_time time.Duration,
+	iana_ip *net.IP) {
+	org_qname := iana_query.Question[0].Name
+	qtype := dns.TypeToString[iana_query.Question[0].Qtype]
+
+	// early exit if we are skipping this query
+	if skip_comparison(iana_query) {
+		glog.V(1).Infof("skipping query for %s %s", org_qname, qtype)
+		sync <- true
+		return
+	}
+
+	var qname string
+	if clear_names {
+		qname = iana_query.Question[0].Name
+	} else {
+		qname = obfuscate_query(iana_query.Question[0].Name)
+	}
 	for _, target := range srvs.next() {
-		dbg.Printf("using server selection %s @ %s", target.ns_name, target.ip)
-		var qname string
-		if clear_names {
-			qname = iana_query.Question[0].Name
-		} else {
-			qname = obfuscate_query(iana_query.Question[0].Name)
-		}
+		glog.V(2).Infof("using server selection %s @ %s", target.ns_name, target.ip)
 		server := "[" + target.ip.String() + "]:53"
-		result += log.Prefix()
-		result += fmt.Sprintf("Sending query '%s' %s as '%s' to %s @ %s\n",
-			iana_query.Question[0].Name,
-			dns.TypeToString[iana_query.Question[0].Qtype],
-			qname,
-			target.ns_name,
-			server)
+		glog.V(1).Infof("sending query '%s' %s as '%s' to %s @ %s\n",
+			org_qname, qtype, qname, target.ns_name, server)
 		// convert to our obfuscated name
 		iana_query.Question[0].Name = qname
 		// set our EDNS buffer size to a magic number
@@ -674,21 +645,33 @@ func yeti_query(srvs *yeti_server_set, clear_names bool, edns_size uint16,
 		// do the actual query
 		yeti_resp, rtt, err := dnsstub.DnsQuery(server, iana_query)
 		if err != nil {
-			result += fmt.Sprintf("Error querying Yeti root server; %s\n", err)
+			glog.Infof("Error querying Yeti root server %s @ %s; %s\n", target.ns_name, server, err)
+			// give a big penalty to our smoothed round-trip time (SRTT)
+			srvs.update_srtt(target.ip, time.Second/2)
 		} else {
-			result += compare_resp(iana_resp, yeti_resp)
+			diffs := compare_resp(iana_resp, yeti_resp)
+			if len(diffs) > 0 {
+				glog.Infof("Differences in response for %s %s from %s @ %s\n",
+					org_qname, qtype, target.ns_name, server)
+			}
+			// record our performance difference, if desired
+			if pf != nil {
+				pf.write_perf(org_qname, qtype, iana_query_time, rtt, iana_ip, &target.ip)
+			}
+			// update our smoothed round-trip time (SRTT)
+			srvs.update_srtt(target.ip, rtt)
 		}
-		// update our smoothed round-trip time (SRTT)
-		srvs.update_srtt(target.ip, rtt)
+		glog.Flush()
 	}
-	output <- result
+
+	sync <- true
 }
 
 func message_reader(output chan *ymmv_message) {
 	for {
 		y, err := read_next_message()
 		if (err != nil) && (err != io.EOF) {
-			log.Fatal(err)
+			glog.Fatal(err)
 		}
 		output <- y
 		if y == nil {
@@ -697,8 +680,105 @@ func message_reader(output chan *ymmv_message) {
 	}
 }
 
+type daily_file struct {
+	name     string   // base file name
+	header   string   // header to put at the top of each file
+	last_day uint     // day we wrote to the file last, year*10000 + month*100 + day
+	writer   *os.File // current file we are writing to
+	lock     sync.Mutex
+}
+
+// roll to a new file if necessary
+// lock must be held before calling
+func (df *daily_file) roll_daily_file() error {
+	y, m, d := time.Now().UTC().Date()
+	this_day := uint((y * 10000) + (int(m) * 100) + d)
+
+	// if we are on a different day then when we wrote the last time
+	if this_day != df.last_day {
+		df.last_day = this_day
+
+		// close any previously open files
+		if df.writer != nil {
+			err := df.writer.Close()
+			if err != nil {
+				return err
+			}
+		}
+
+		// open the new file
+		fname := fmt.Sprintf("%s.%4d-%2d-%2d.log", df.name, y, m, d)
+		var err error
+		df.writer, err = os.OpenFile(fname, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0644)
+		if err != nil {
+			return err
+		}
+		// write a header if the file is empty
+		fi, err := df.writer.Stat()
+		if err != nil {
+			return err
+		}
+		if fi.Size() == 0 {
+			fmt.Fprintln(df.writer, df.header)
+		}
+	}
+	return nil
+}
+
+func open_daily_file(name string, header string) (*daily_file, error) {
+	df := new(daily_file)
+	df.name = name
+	df.header = header
+	err := df.roll_daily_file()
+	if err != nil {
+		return nil, err
+	}
+	return df, nil
+}
+
+func (pf *daily_file) write_perf(qname string, qtype string,
+	iana_time time.Duration, yeti_time time.Duration, iana_ip *net.IP, yeti_ip *net.IP) {
+
+	pf.lock.Lock()
+	defer pf.lock.Unlock()
+
+	err := pf.roll_daily_file()
+	if err != nil {
+		glog.Fatalf("Error rolling performance file %s", err)
+	}
+
+	fmt.Fprintf(pf.writer, "%s, %6.6f, %6.6f, %20s, %35s, %11s, %s\n",
+		time.Now().UTC().Format("2006-01-02T15:04:05"),
+		iana_time.Seconds(), yeti_time.Seconds(), iana_ip, yeti_ip, qtype, qname)
+	pf.writer.Sync()
+}
+
+func (df *daily_file) write_diffs(qname string, qtype string,
+	iana_ip *net.IP, yeti_ip *net.IP, diffs []string) {
+
+	df.lock.Lock()
+	defer df.lock.Unlock()
+
+	err := df.roll_daily_file()
+	if err != nil {
+		glog.Fatalf("Error rolling differences file %s", err)
+	}
+
+	fmt.Fprintln(df.writer,
+		"================================================================================")
+	fmt.Fprintf(df.writer, "%s\n", time.Now().UTC().Format("2006-01-02T15:04:05"))
+	fmt.Fprintf(df.writer, "qname: %s\n", qname)
+	fmt.Fprintf(df.writer, "qtype: %s\n", qtype)
+	fmt.Fprintf(df.writer, "IANA IP: %s\n", iana_ip)
+	fmt.Fprintf(df.writer, "Yeti IP: %s\n", yeti_ip)
+	fmt.Fprintln(df.writer, "----------------------------------------")
+	for _, diff := range diffs {
+		fmt.Fprintln(df.writer, "%s\n", diff)
+	}
+	df.writer.Sync()
+}
+
 // Main function.
-// TODO: verbose/debug flags
 func main() {
 	clear_names := flag.Bool("c", false, "use non-obfuscated (clear) query names")
 	secret := flag.String("s", "",
@@ -707,6 +787,10 @@ func main() {
 		"set EDNS0 buffer size (set to 0 to use original query size)")
 	select_alg := flag.String("a", "rtt",
 		"set server-selection algorithm, either rtt, round-robin, random, or all")
+	perf_file_name := flag.String("p", "",
+		"base file name to store performance comparison in (default none)")
+	diff_file_name := flag.String("d", "",
+		"base file name to store difference details in (default none)")
 	flag.Parse()
 	var ips []net.IP
 	args := flag.Args()
@@ -714,19 +798,21 @@ func main() {
 		ip := net.ParseIP(server)
 		// TODO: allow host name here
 		if ip == nil {
-			log.Fatalf("Unrecognized IP address '%s'\n", server)
+			fmt.Printf("Unrecognized IP address '%s'\n", server)
+			os.Exit(1)
 		}
 		ips = append(ips, ip)
 	}
-	dbg.Printf("ips=%s", ips)
+	glog.V(2).Infof("ips=%s", ips)
 
 	if *secret != "" {
 		var err error
 		obfuscate_secret, err = hex.DecodeString(*secret)
 		if err != nil {
-			log.Fatalf("Error decoding secret for obfuscated query names: %s", err)
+			fmt.Printf("Error decoding secret for obfuscated query names: %s", err)
+			os.Exit(1)
 		}
-		log.Printf("using obfuscation secret %s", strings.ToUpper(*secret))
+		glog.Infof("using obfuscation secret %s", strings.ToUpper(*secret))
 	}
 
 	// verify our EDNS buffer size
@@ -744,6 +830,30 @@ func main() {
 		os.Exit(1)
 	}
 
+	// open our performance file, if specified
+	var perf_file *daily_file
+	if *perf_file_name != "" {
+		var err error
+		header := "#              time, iana_rtt, yeti_rtt,            iana_root,                           yeti_root,       qtype, qname"
+		perf_file, err = open_daily_file(*perf_file_name, header)
+		if err != nil {
+			fmt.Printf("Error opening performance file '%s': %s\n", perf_file_name, err)
+			os.Exit(1)
+		}
+	}
+
+	// open our differences file, if specified
+	var diff_file *daily_file
+	if *diff_file_name != "" {
+		var err error
+		header := ""
+		diff_file, err = open_daily_file(*diff_file_name, header)
+		if err != nil {
+			fmt.Printf("Error opening differences file '%s': %s\n", diff_file_name, err)
+			os.Exit(1)
+		}
+	}
+
 	// start a goroutine to read our input
 	messages := make(chan *ymmv_message)
 	go message_reader(messages)
@@ -751,32 +861,34 @@ func main() {
 	// initialize our server set
 	servers := init_yeti_server_set(ips, *select_alg)
 
-	// make a channel to get our comparison results
-	query_output := make(chan string)
+	// make a channel for finishing comparisons
+	query_sync := make(chan bool)
 
 	// keep track of number of outstanding queries
 	query_count := 0
 
 	// main loop, gets answers to compare and collects the results
 	for {
+		glog.Flush()
 		select {
 		// new answer to compare
 		case y := <-messages:
 			if y == nil {
 				break
 			}
-			go yeti_query(servers, *clear_names, uint16(*edns_size), y.query, y.answer, query_output)
+			go yeti_query(query_sync, servers, *clear_names, uint16(*edns_size),
+				perf_file, diff_file, y.query, y.answer, y.answer_time.Sub(y.query_time), y.addr)
 			query_count += 1
 		// comparison done
-		case str := <-query_output:
-			fmt.Print(str)
+		case <-query_sync:
 			query_count -= 1
 		}
 	}
 
 	// wait for any outstanding queries to finish before exiting
 	for query_count > 0 {
-		fmt.Print(<-query_output)
+		<-query_sync
 		query_count -= 1
+		glog.Flush()
 	}
 }
