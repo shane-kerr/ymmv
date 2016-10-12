@@ -900,8 +900,7 @@ func main() {
 	mail_port := flag.Uint("mail-port", 25, "SMTP server port")
 	mail_user := flag.String("mail-user", "", "SMTP user name (default none)")
 	mail_pass := flag.String("mail-pass", "", "SMTP password (default none)")
-	//    mail_to := flag.String("mail-to", "ymmv-reports@biigroup.cn", "report e-mail address")
-	mail_to := flag.String("mail-to", "shane@biigroup.cn", "report e-mail address")
+	mail_to := flag.String("mail-to", "ymmv-reports@biigroup.cn", "report e-mail address")
 
 	// the e-mail source & destination
 	flag.Parse()
