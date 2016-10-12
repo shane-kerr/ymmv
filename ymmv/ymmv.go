@@ -974,8 +974,6 @@ func main() {
 	// configure reporting
 	var report_conf report_conf
 	if *daily_report {
-		report_conf.report_type = no_report
-	} else {
 		report_conf.report_type = mail_smtp
 		report_conf.mail_server = *mail_server
 		if *mail_port > 65535 {
@@ -988,6 +986,8 @@ func main() {
 		report_conf.mail_pass = *mail_pass
 		report_conf.mail_to = *mail_to
 		report_conf.mail_from = "ymmv-reports@biigroup.cn"
+	} else {
+		report_conf.report_type = no_report
 	}
 
 	// start a goroutine to read our input
