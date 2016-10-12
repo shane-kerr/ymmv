@@ -653,6 +653,7 @@ func yeti_query(sync chan bool, srvs *yeti_server_set,
 			if len(diffs) > 0 {
 				glog.Infof("Differences in response for %s %s from %s @ %s\n",
 					org_qname, qtype, target.ns_name, server)
+				df.write_diffs(org_qname, qtype, iana_ip, &target.ip, diffs)
 			}
 			// record our performance difference, if desired
 			if pf != nil {
@@ -714,12 +715,14 @@ func (df *daily_file) roll_daily_file() error {
 			return err
 		}
 		// write a header if the file is empty
-		fi, err := df.writer.Stat()
-		if err != nil {
-			return err
-		}
-		if fi.Size() == 0 {
-			fmt.Fprintln(df.writer, df.header)
+		if df.header != "" {
+			fi, err := df.writer.Stat()
+			if err != nil {
+				return err
+			}
+			if fi.Size() == 0 {
+				fmt.Fprintln(df.writer, df.header)
+			}
 		}
 	}
 	return nil
@@ -773,7 +776,7 @@ func (df *daily_file) write_diffs(qname string, qtype string,
 	fmt.Fprintf(df.writer, "Yeti IP: %s\n", yeti_ip)
 	fmt.Fprintln(df.writer, "----------------------------------------")
 	for _, diff := range diffs {
-		fmt.Fprintln(df.writer, "%s\n", diff)
+		fmt.Fprintf(df.writer, "%s\n", diff)
 	}
 	df.writer.Sync()
 }
