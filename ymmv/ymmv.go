@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -15,6 +16,7 @@ import (
 	"math/rand"
 	"net"
 	"os"
+	"os/exec"
 	"reflect"
 	"sort"
 	"strconv"
@@ -768,14 +770,86 @@ func (cfg *report_conf) send_report(diff_fname string, perf_fname string) {
 		err := d.DialAndSend(m)
 		if err != nil {
 			glog.Errorf("error sending report: %s", err)
-		} else {
-			user_str := cfg.mail_user
-			if user_str != "" {
-				user_str = user_str + "@"
-			}
-			glog.Infof("sent SMTP report to %s via %s%s:%d",
-				cfg.mail_to, user_str, cfg.mail_server, cfg.mail_port)
+			return
 		}
+		user_str := cfg.mail_user
+		if user_str != "" {
+			user_str = user_str + "@"
+		}
+		glog.Infof("sent SMTP report to %s via %s%s:%d",
+			cfg.mail_to, user_str, cfg.mail_server, cfg.mail_port)
+	} else if cfg.report_type == mail_sendmail {
+		glog.V(1).Infof("sending sendmail report to %", cfg.mail_to)
+		cmd := exec.Command(cfg.mail_prog, "-t")
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+
+		pw, err := cmd.StdinPipe()
+		if err != nil {
+			glog.Errorf("error creating pipe: %s", err)
+			return
+		}
+
+		// The m.WriteTo() function is designed for SMTP, so it sends "\r\n" pairs.
+		// This is interpreted by sendmail as two blank lines. To avoid this problem,
+		// we run the output of m.WriteTo() through a filter which converts "\r\n" to
+		// "\n", and removes any final "\r".
+		// Note that we don't worry about efficiency - these are small mails.
+		cr_read, cr_write := io.Pipe()
+		cr_buf_read := bufio.NewReader(cr_read)
+		filter := func() {
+			for {
+				// read until next newline character
+				bytes, err := cr_buf_read.ReadBytes('\n')
+				if err != nil {
+					// io.EOF indicates end of input, anything else we report
+					if err != io.EOF {
+						glog.Errorf("error reading pipe: %s", err)
+					}
+					// close our PipeReader
+					cr_read.Close()
+					// close the output to sendmail (this causes the mail to be sent)
+					pw.Close()
+					// exit our goroutine
+					return
+				}
+				n := len(bytes)
+				// this is the case where the input ends and we have a final '\r'
+				if (n > 0) && (bytes[n-1] == '\r') {
+					bytes = bytes[:n-1]
+					// this is the case where we have a '\r\n' sequence
+				} else if (n > 1) && (bytes[n-2] == '\r') && (bytes[n-1] == '\n') {
+					bytes = append(bytes[:n-2], '\n')
+				}
+				// write our fixed line
+				pw.Write(bytes)
+			}
+		}
+		go filter()
+
+		err = cmd.Start()
+		if err != nil {
+			glog.Errorf("error starting sendmail command '%s -t': %s", cfg.mail_prog, err)
+			pw.Close()
+			return
+		}
+
+		_, err = m.WriteTo(cr_write)
+		if err != nil {
+			glog.Errorf("error writing to sendmail: %s", err)
+		}
+
+		err = cr_write.Close()
+		if err != nil {
+			glog.Errorf("error closing pipe writer: %s", err)
+		}
+
+		err = cmd.Wait()
+		if err != nil {
+			glog.Errorf("error waiting on sendmail to finish: %s", err)
+		}
+
+		glog.Infof("sent sendmail report to %s", cfg.mail_to)
 	}
 }
 
@@ -905,12 +979,16 @@ func main() {
 		"base file name to store difference details in (default none)")
 	daily_report := flag.Bool("r", false, "send daily reports")
 
-	// mail parameters
+	// SMTP parameters
 	mail_server := flag.String("mail-server", "mxbiz1.qq.com", "SMTP server name")
 	mail_port := flag.Uint("mail-port", 25, "SMTP server port")
 	mail_user := flag.String("mail-user", "", "SMTP user name (default none)")
 	mail_pass := flag.String("mail-pass", "", "SMTP password (default none)")
 	mail_to := flag.String("mail-to", "ymmv-reports@biigroup.cn", "report e-mail address")
+
+	// sendmail parameters
+	sendmail := flag.Bool("sendmail", false, "use sendmail to send reports")
+	sendmail_prog := flag.String("sendmail-prog", "/usr/sbin/sendmail", "path to sendmail executable")
 
 	// the e-mail source & destination
 	flag.Parse()
@@ -979,18 +1057,24 @@ func main() {
 	// configure reporting
 	var report_conf report_conf
 	if *daily_report {
-		report_conf.report_type = mail_smtp
-		report_conf.mail_server = *mail_server
-		if *mail_port > 65535 {
-			fmt.Println("Syntax error: SMTP port must be <= 65535")
-			flag.PrintDefaults()
-			os.Exit(1)
-		}
-		report_conf.mail_port = int(*mail_port)
-		report_conf.mail_user = *mail_user
-		report_conf.mail_pass = *mail_pass
 		report_conf.mail_to = *mail_to
 		report_conf.mail_from = "ymmv-reports@biigroup.cn"
+
+		if *sendmail {
+			report_conf.report_type = mail_sendmail
+			report_conf.mail_prog = *sendmail_prog
+		} else {
+			report_conf.report_type = mail_smtp
+			report_conf.mail_server = *mail_server
+			if *mail_port > 65535 {
+				fmt.Println("Syntax error: SMTP port must be <= 65535")
+				flag.PrintDefaults()
+				os.Exit(1)
+			}
+			report_conf.mail_port = int(*mail_port)
+			report_conf.mail_user = *mail_user
+			report_conf.mail_pass = *mail_pass
+		}
 	} else {
 		report_conf.report_type = no_report
 	}
