@@ -695,7 +695,8 @@ func message_reader(output chan *ymmv_message) {
 type report_type uint
 
 const (
-	mail_sendmail report_type = iota // invoke MTA locally
+	no_report     report_type = iota // no reporting
+	mail_sendmail             = iota // invoke MTA locally
 	mail_smtp                 = iota // deliver mail via SMTP
 )
 
@@ -716,6 +717,11 @@ type report_conf struct {
 }
 
 func (cfg *report_conf) send_report(diff_fname string, perf_fname string) {
+	if cfg.report_type == no_report {
+		glog.V(1).Infof("skipping report because report_type is no_report")
+		return
+	}
+
 	// if we have nothing to report, we are done
 	if (diff_fname == "") && (perf_fname == "") {
 		glog.V(1).Infof("skipping report since there are no log files")
@@ -747,8 +753,6 @@ func (cfg *report_conf) send_report(diff_fname string, perf_fname string) {
 	if cfg.report_type == mail_smtp {
 		glog.V(1).Infof("sending SMTP report to %s via %s %s:%d",
 			cfg.mail_to, cfg.mail_user, cfg.mail_server, cfg.mail_port)
-		//		d := gomail.Dialer{Host: cfg.mail_server, Port: cfg.mail_port,
-		//			Username: cfg.mail_user, Password: cfg.mail_pass}
 		d := gomail.Dialer{Host: cfg.mail_server, Port: cfg.mail_port}
 		if cfg.mail_user != "" {
 			d.Username = cfg.mail_user
@@ -894,6 +898,7 @@ func main() {
 		"base file name to store performance comparison in (default none)")
 	diff_file_name := flag.String("d", "",
 		"base file name to store difference details in (default none)")
+	daily_report := flag.Bool("r", false, "send daily reports")
 
 	// mail parameters
 	mail_server := flag.String("mail-server", "mxbiz1.qq.com", "SMTP server name")
@@ -968,18 +973,22 @@ func main() {
 
 	// configure reporting
 	var report_conf report_conf
-	report_conf.report_type = mail_smtp
-	report_conf.mail_server = *mail_server
-	if *mail_port > 65535 {
-		fmt.Println("Syntax error: SMTP port must be <= 65535")
-		flag.PrintDefaults()
-		os.Exit(1)
+	if *daily_report {
+		report_conf.report_type = no_report
+	} else {
+		report_conf.report_type = mail_smtp
+		report_conf.mail_server = *mail_server
+		if *mail_port > 65535 {
+			fmt.Println("Syntax error: SMTP port must be <= 65535")
+			flag.PrintDefaults()
+			os.Exit(1)
+		}
+		report_conf.mail_port = int(*mail_port)
+		report_conf.mail_user = *mail_user
+		report_conf.mail_pass = *mail_pass
+		report_conf.mail_to = *mail_to
+		report_conf.mail_from = "ymmv-reports@biigroup.cn"
 	}
-	report_conf.mail_port = int(*mail_port)
-	report_conf.mail_user = *mail_user
-	report_conf.mail_pass = *mail_pass
-	report_conf.mail_to = *mail_to
-	report_conf.mail_from = "ymmv-reports@biigroup.cn"
 
 	// start a goroutine to read our input
 	messages := make(chan *ymmv_message)
