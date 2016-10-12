@@ -612,7 +612,7 @@ func SetOrChangeUDPSize(msg *dns.Msg, udpsize uint16) *dns.Msg {
 	return msg
 }
 
-func yeti_query(sync chan bool, srvs *yeti_server_set,
+func yeti_query(sync chan bool, report *report_conf, srvs *yeti_server_set,
 	clear_names bool, edns_size uint16, pf *daily_file, df *daily_file,
 	iana_query *dns.Msg, iana_resp *dns.Msg, iana_query_time time.Duration,
 	iana_ip *net.IP) {
@@ -650,18 +650,27 @@ func yeti_query(sync chan bool, srvs *yeti_server_set,
 			// give a big penalty to our smoothed round-trip time (SRTT)
 			srvs.update_srtt(target.ip, time.Second/2)
 		} else {
+			var rolled bool = false
 			diffs := compare_resp(iana_resp, yeti_resp)
 			if len(diffs) > 0 {
 				glog.Infof("Differences in response for %s %s from %s @ %s\n",
 					org_qname, qtype, target.ns_name, server)
-				df.write_diffs(org_qname, qtype, iana_ip, &target.ip, diffs)
+				if df.write_diffs(org_qname, qtype, iana_ip, &target.ip, diffs) {
+					rolled = true
+				}
 			}
 			// record our performance difference, if desired
 			if pf != nil {
-				pf.write_perf(org_qname, qtype, iana_query_time, rtt, iana_ip, &target.ip)
+				if pf.write_perf(org_qname, qtype, iana_query_time, rtt, iana_ip, &target.ip) {
+					rolled = true
+				}
 			}
 			// update our smoothed round-trip time (SRTT)
 			srvs.update_srtt(target.ip, rtt)
+			// report the results
+			if rolled {
+				report.send_report(df.old_name, pf.old_name)
+			}
 		}
 		glog.Flush()
 	}
@@ -705,16 +714,6 @@ type report_conf struct {
 	mail_from string
 	mail_to   string
 }
-
-/*
-var report = report_conf{
-	report_type: mail_smtp,
-	mail_server: "mxbiz1.qq.com",
-	mail_port:   25,
-//	mail_to:     "ymmv-reports@biigroup.cn",
-	mail_to:     "shane@biigroup.cn",
-    mail_from:   "ymmv-reports@biigroup.cn",
-}*/
 
 func (cfg *report_conf) send_report(diff_fname string, perf_fname string) {
 	// if we have nothing to report, we are done
@@ -768,8 +767,6 @@ func (cfg *report_conf) send_report(diff_fname string, perf_fname string) {
 			glog.Infof("sent SMTP report to %s via %s%s:%d",
 				cfg.mail_to, user_str, cfg.mail_server, cfg.mail_port)
 		}
-		//    d := gomail.Dialer{Host:"smtp.time-travellers.org", Port:25}
-		//    d := gomail.NewDialer("smtp.time-travellers.org", 25, "relay-user@time-travellers.org", "sleeping-kitty-next-to-the-remote-control-and-tray-with-cups")
 	}
 }
 
@@ -777,6 +774,7 @@ type daily_file struct {
 	name     string       // base file name
 	header   string       // header to put at the top of each file
 	last_day uint         // day we wrote to the file last, year*10000 + month*100 + day
+	old_name string       // previous name of the file
 	cur_name string       // current name of the file
 	writer   *os.File     // current file we are writing to
 	report   *report_conf // configuration of the reporting, if any
@@ -785,7 +783,7 @@ type daily_file struct {
 
 // roll to a new file if necessary
 // lock must be held before calling
-func (df *daily_file) roll_daily_file() error {
+func (df *daily_file) roll_daily_file() (bool, error) {
 	y, m, d := time.Now().UTC().Date()
 	this_day := uint((y * 10000) + (int(m) * 100) + d)
 
@@ -797,7 +795,7 @@ func (df *daily_file) roll_daily_file() error {
 		if df.writer != nil {
 			err := df.writer.Close()
 			if err != nil {
-				return err
+				return false, err
 			}
 		}
 
@@ -806,28 +804,31 @@ func (df *daily_file) roll_daily_file() error {
 		var err error
 		df.writer, err = os.OpenFile(fname, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0644)
 		if err != nil {
-			return err
+			return false, err
 		}
+		df.old_name = df.cur_name
 		df.cur_name = fname
 		// write a header if the file is empty
 		if df.header != "" {
 			fi, err := df.writer.Stat()
 			if err != nil {
-				return err
+				return false, err
 			}
 			if fi.Size() == 0 {
 				fmt.Fprintln(df.writer, df.header)
 			}
 		}
+		return true, nil
+	} else {
+		return false, nil
 	}
-	return nil
 }
 
 func open_daily_file(name string, header string) (*daily_file, error) {
 	df := new(daily_file)
 	df.name = name
 	df.header = header
-	err := df.roll_daily_file()
+	_, err := df.roll_daily_file()
 	if err != nil {
 		return nil, err
 	}
@@ -835,12 +836,12 @@ func open_daily_file(name string, header string) (*daily_file, error) {
 }
 
 func (pf *daily_file) write_perf(qname string, qtype string,
-	iana_time time.Duration, yeti_time time.Duration, iana_ip *net.IP, yeti_ip *net.IP) {
+	iana_time time.Duration, yeti_time time.Duration, iana_ip *net.IP, yeti_ip *net.IP) bool {
 
 	pf.lock.Lock()
 	defer pf.lock.Unlock()
 
-	err := pf.roll_daily_file()
+	rolled, err := pf.roll_daily_file()
 	if err != nil {
 		glog.Fatalf("Error rolling performance file %s", err)
 	}
@@ -849,15 +850,17 @@ func (pf *daily_file) write_perf(qname string, qtype string,
 		time.Now().UTC().Format("2006-01-02T15:04:05"),
 		iana_time.Seconds(), yeti_time.Seconds(), iana_ip, yeti_ip, qtype, qname)
 	pf.writer.Sync()
+
+	return rolled
 }
 
 func (df *daily_file) write_diffs(qname string, qtype string,
-	iana_ip *net.IP, yeti_ip *net.IP, diffs []string) {
+	iana_ip *net.IP, yeti_ip *net.IP, diffs []string) bool {
 
 	df.lock.Lock()
 	defer df.lock.Unlock()
 
-	err := df.roll_daily_file()
+	rolled, err := df.roll_daily_file()
 	if err != nil {
 		glog.Fatalf("Error rolling differences file %s", err)
 	}
@@ -874,6 +877,8 @@ func (df *daily_file) write_diffs(qname string, qtype string,
 		fmt.Fprintf(df.writer, "%s\n", diff)
 	}
 	df.writer.Sync()
+
+	return rolled
 }
 
 // Main function.
@@ -986,10 +991,6 @@ func main() {
 		perf_report = perf_file.cur_name
 	}
 
-	fmt.Printf("sending report...\n")
-	report_conf.send_report(diff_report, perf_report)
-	fmt.Printf("done sending report!\n")
-
 	// start a goroutine to read our input
 	messages := make(chan *ymmv_message)
 	go message_reader(messages)
@@ -1012,7 +1013,7 @@ func main() {
 			if y == nil {
 				break
 			}
-			go yeti_query(query_sync, servers, *clear_names, uint16(*edns_size),
+			go yeti_query(query_sync, &report_conf, servers, *clear_names, uint16(*edns_size),
 				perf_file, diff_file, y.query, y.answer, y.answer_time.Sub(y.query_time), y.addr)
 			query_count += 1
 		// comparison done
