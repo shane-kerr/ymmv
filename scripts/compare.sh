@@ -32,6 +32,11 @@ YMMV_DIR=`dirname $0`/..
 PCAP2YMMV=${YMMV_DIR}/pcap2ymmv/pcap2ymmv
 YMMV=${YMMV_DIR}/ymmv/ymmv
 
+# the following line adds reporting, using sendmail to send
+# differences and performance comparisons
+#YMMV="${YMMV_DIR}/ymmv/ymmv -p /tmp/ymmv-$1-perf -d /tmp/ymmv-$1-diff -r -sendmail"
+
+
 # if we are called without an argument, output a usage message
 if [ $# -ne 1 ]; then
   echo "Syntax: $0 interface" >&2
