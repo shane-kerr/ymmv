@@ -10,6 +10,7 @@ import (
 	"github.com/golang/glog"
 	"github.com/miekg/dns"
 	"github.com/shane-kerr/ymmv/dnsstub"
+	"gopkg.in/gomail.v2"
 	"io"
 	"math/rand"
 	"net"
@@ -681,11 +682,104 @@ func message_reader(output chan *ymmv_message) {
 	}
 }
 
+// define our supported ways of reporting via e-mail
+type report_type uint
+
+const (
+	mail_sendmail report_type = iota // invoke MTA locally
+	mail_smtp                 = iota // deliver mail via SMTP
+)
+
+// how we report results (only via e-mail now)
+type report_conf struct {
+	report_type report_type
+	// to set sendmail location
+	mail_prog string
+	// to set the server to connect to
+	mail_server string
+	mail_port   int
+	// the authentication details if we need it
+	mail_user string
+	mail_pass string
+	// the e-mail source & destination
+	mail_from string
+	mail_to   string
+}
+
+/*
+var report = report_conf{
+	report_type: mail_smtp,
+	mail_server: "mxbiz1.qq.com",
+	mail_port:   25,
+//	mail_to:     "ymmv-reports@biigroup.cn",
+	mail_to:     "shane@biigroup.cn",
+    mail_from:   "ymmv-reports@biigroup.cn",
+}*/
+
+func (cfg *report_conf) send_report(diff_fname string, perf_fname string) {
+	// if we have nothing to report, we are done
+	if (diff_fname == "") && (perf_fname == "") {
+		glog.V(1).Infof("skipping report since there are no log files")
+		return
+	}
+
+	// build our message
+	m := gomail.NewMessage()
+	m.SetHeader("From", cfg.mail_from)
+	if cfg.mail_to != "" {
+		m.SetHeader("To", cfg.mail_to)
+	}
+	hostname, err := os.Hostname()
+	if err != nil {
+		glog.Warning("error getting hostname: %s", err)
+		hostname = "*unknown*"
+	}
+	subject := fmt.Sprintf("ymmv report : %s : %s : %s", hostname, diff_fname, perf_fname)
+	m.SetHeader("Subject", subject)
+	m.SetBody("text/plain", "ymmv report, details in attached log files")
+	if diff_fname != "" {
+		m.Attach(diff_fname)
+	}
+	if perf_fname != "" {
+		m.Attach(perf_fname)
+	}
+
+	// send the message
+	if cfg.report_type == mail_smtp {
+		glog.V(1).Infof("sending SMTP report to %s via %s %s:%d",
+			cfg.mail_to, cfg.mail_user, cfg.mail_server, cfg.mail_port)
+		//		d := gomail.Dialer{Host: cfg.mail_server, Port: cfg.mail_port,
+		//			Username: cfg.mail_user, Password: cfg.mail_pass}
+		d := gomail.Dialer{Host: cfg.mail_server, Port: cfg.mail_port}
+		if cfg.mail_user != "" {
+			d.Username = cfg.mail_user
+		}
+		if cfg.mail_pass != "" {
+			d.Password = cfg.mail_pass
+		}
+		err := d.DialAndSend(m)
+		if err != nil {
+			glog.Errorf("error sending report: %s", err)
+		} else {
+			user_str := cfg.mail_user
+			if user_str != "" {
+				user_str = user_str + "@"
+			}
+			glog.Infof("sent SMTP report to %s via %s%s:%d",
+				cfg.mail_to, user_str, cfg.mail_server, cfg.mail_port)
+		}
+		//    d := gomail.Dialer{Host:"smtp.time-travellers.org", Port:25}
+		//    d := gomail.NewDialer("smtp.time-travellers.org", 25, "relay-user@time-travellers.org", "sleeping-kitty-next-to-the-remote-control-and-tray-with-cups")
+	}
+}
+
 type daily_file struct {
-	name     string   // base file name
-	header   string   // header to put at the top of each file
-	last_day uint     // day we wrote to the file last, year*10000 + month*100 + day
-	writer   *os.File // current file we are writing to
+	name     string       // base file name
+	header   string       // header to put at the top of each file
+	last_day uint         // day we wrote to the file last, year*10000 + month*100 + day
+	cur_name string       // current name of the file
+	writer   *os.File     // current file we are writing to
+	report   *report_conf // configuration of the reporting, if any
 	lock     sync.Mutex
 }
 
@@ -714,6 +808,7 @@ func (df *daily_file) roll_daily_file() error {
 		if err != nil {
 			return err
 		}
+		df.cur_name = fname
 		// write a header if the file is empty
 		if df.header != "" {
 			fi, err := df.writer.Stat()
@@ -794,6 +889,16 @@ func main() {
 		"base file name to store performance comparison in (default none)")
 	diff_file_name := flag.String("d", "",
 		"base file name to store difference details in (default none)")
+
+	// mail parameters
+	mail_server := flag.String("mail-server", "mxbiz1.qq.com", "SMTP server name")
+	mail_port := flag.Uint("mail-port", 25, "SMTP server port")
+	mail_user := flag.String("mail-user", "", "SMTP user name (default none)")
+	mail_pass := flag.String("mail-pass", "", "SMTP password (default none)")
+	//    mail_to := flag.String("mail-to", "ymmv-reports@biigroup.cn", "report e-mail address")
+	mail_to := flag.String("mail-to", "shane@biigroup.cn", "report e-mail address")
+
+	// the e-mail source & destination
 	flag.Parse()
 	var ips []net.IP
 	args := flag.Args()
@@ -856,6 +961,34 @@ func main() {
 			os.Exit(1)
 		}
 	}
+
+	// configure reporting
+	var report_conf report_conf
+	report_conf.report_type = mail_smtp
+	report_conf.mail_server = *mail_server
+	if *mail_port > 65535 {
+		fmt.Println("Syntax error: SMTP port must be <= 65535")
+		flag.PrintDefaults()
+		os.Exit(1)
+	}
+	report_conf.mail_port = int(*mail_port)
+	report_conf.mail_user = *mail_user
+	report_conf.mail_pass = *mail_pass
+	report_conf.mail_to = *mail_to
+	report_conf.mail_from = "ymmv-reports@biigroup.cn"
+
+	var diff_report string
+	if diff_file != nil {
+		diff_report = diff_file.cur_name
+	}
+	var perf_report string
+	if perf_file != nil {
+		perf_report = perf_file.cur_name
+	}
+
+	fmt.Printf("sending report...\n")
+	report_conf.send_report(diff_report, perf_report)
+	fmt.Printf("done sending report!\n")
 
 	// start a goroutine to read our input
 	messages := make(chan *ymmv_message)
