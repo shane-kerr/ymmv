@@ -981,15 +981,6 @@ func main() {
 	report_conf.mail_to = *mail_to
 	report_conf.mail_from = "ymmv-reports@biigroup.cn"
 
-	var diff_report string
-	if diff_file != nil {
-		diff_report = diff_file.cur_name
-	}
-	var perf_report string
-	if perf_file != nil {
-		perf_report = perf_file.cur_name
-	}
-
 	// start a goroutine to read our input
 	messages := make(chan *ymmv_message)
 	go message_reader(messages)
