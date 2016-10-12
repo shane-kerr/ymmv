@@ -114,32 +114,43 @@ Whether you customize `compare.sh` or use some other means to run
 
 You can see these options via `ymmv -h`:
 
-    Usage of ./ymmv:
+    Usage of ymmv/ymmv:
       -a string
-            set server-selection algorithm, either rtt, round-robin, random, or all (default "rtt")
+    	    set server-selection algorithm, either rtt, round-robin, random, or all (default "rtt")
       -alsologtostderr
-            log to standard error as well as files
-      -c    use non-obfuscated (clear) query names
+    	    log to standard error as well as files
+      -c	use non-obfuscated (clear) query names
       -d string
-            base file name to store difference details in (default none)
+    	    base file name to store difference details in (default none)
       -e uint
-            set EDNS0 buffer size (set to 0 to use original query size) (default 4093)
+    	    set EDNS0 buffer size (set to 0 to use original query size) (default 4093)
       -log_backtrace_at value
-            when logging hits line file:N, emit a stack trace
+    	    when logging hits line file:N, emit a stack trace
       -log_dir string
-            If non-empty, write log files in this directory
+    	    If non-empty, write log files in this directory
       -logtostderr
-            log to standard error instead of files
+    	    log to standard error instead of files
+      -mail-pass string
+    	    SMTP password (default none)
+      -mail-port uint
+    	    SMTP server port (default 25)
+      -mail-server string
+    	    SMTP server name (default "mxbiz1.qq.com")
+      -mail-to string
+    	    report e-mail address (default "ymmv-reports@biigroup.cn")
+      -mail-user string
+    	    SMTP user name (default none)
       -p string
-            base file name to store performance comparison in (default none)
+    	    base file name to store performance comparison in (default none)
+      -r	send daily reports
       -s string
-            secret for obfuscated query names, hex-encoded (default random-generated)
+    	    secret for obfuscated query names, hex-encoded (default random-generated)
       -stderrthreshold value
-            logs at or above this threshold go to stderr
+    	    logs at or above this threshold go to stderr
       -v value
-            log level for V logs
+    	    log level for V logs
       -vmodule value
-            comma-separated list of pattern=N settings for file-filtered logging
+    	    comma-separated list of pattern=N settings for file-filtered logging
 
 ### Comparing Query Times
 
@@ -267,6 +278,16 @@ it easier to spot use of `ymmv` on the authoritative side. You can use
 the `-e` flag to set this to some other value. A value of 0 means to
 use the EDNS buffer size of the original query.
 
+### Mailing Reports
+
+You can tell `ymmv` to send e-mail reports every day by using the `-r`
+flag. By default, no reports are sent.
+
+You can control the details of how the mail is sent with any of the
+flags starting with "-mail". By default the software tries to connect
+directly to the mail server used by BII and deliver the mail to a role
+account.
+
 ### Logging Details
 
 The following flags control details about the logging output:
@@ -308,7 +329,3 @@ There are several limitations right now, being worked on:
 The [PcapParser](https://github.com/RunxiaWan/PcapParser) can be used
 to perform IP fragment reassembly and extract DNS queries and answers
 from TCP streams. It will be further integrated in the future.
-
-* No easy way exists to report differences found back to the Yeti
-  operators. This will be added as an opt-in "--email-to" command-line
-  option.
