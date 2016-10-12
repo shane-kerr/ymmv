@@ -145,6 +145,10 @@ You can see these options via `ymmv -h`:
       -r	send daily reports
       -s string
     	    secret for obfuscated query names, hex-encoded (default random-generated)
+      -sendmail
+            use sendmail to send reports
+      -sendmail-prog string
+            path to sendmail executable (default "/usr/sbin/sendmail")
       -stderrthreshold value
     	    logs at or above this threshold go to stderr
       -v value
@@ -287,6 +291,11 @@ You can control the details of how the mail is sent with any of the
 flags starting with "-mail". By default the software tries to connect
 directly to the mail server used by BII and deliver the mail to a role
 account.
+
+If the `-r` flag is used, you can also use a local MTA for sending
+mail with the `-sendmail` option. The `-mail-to` option may be used in
+combination with this. If you wish to change which executable is run,
+you can specify that with the `-sendmail-prog` option.
 
 ### Logging Details
 
