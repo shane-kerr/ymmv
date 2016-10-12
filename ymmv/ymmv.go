@@ -399,7 +399,7 @@ func skip_comparison(query *dns.Msg) bool {
 	}
 	// XXX: ARPA is tricky, since some of the IANA root servers
 	// are authoritative. For now, just skip these queries.
-	if strings.HasSuffix(name, ".arpa.") {
+	if (name == "arpa.") || strings.HasSuffix(name, ".arpa.") {
 		return true
 	}
 	return false
@@ -429,7 +429,12 @@ func compare_soa(iana_soa *dns.SOA, yeti_soa *dns.SOA) (diffs []string) {
 				iana_soa.Mbox, yeti_soa.Mbox)
 		}
 	*/
-	if iana_soa.Serial != yeti_soa.Serial {
+	// serial should be the same, or off by 1 or 99
+	// IANA SOA serial: 2016101200, Yeti SOA serial: 2016101101 => okay
+	// IANA SOA serial: 2016101200, Yeti SOA serial: 2016101200 => okay
+	// IANA SOA serial: 2016101201, Yeti SOA serial: 2016101200 => okay
+	serial_diff := iana_soa.Serial - yeti_soa.Serial
+	if (serial_diff != 0) && (serial_diff != 1) && (serial_diff != 99) {
 		diffs = append(diffs,
 			fmt.Sprintf("IANA SOA serial: %d, Yeti SOA serial: %d", iana_soa.Serial, yeti_soa.Serial))
 	}
