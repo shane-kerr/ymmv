@@ -396,7 +396,7 @@ func skip_comparison(query *dns.Msg) bool {
 		return true
 	}
 	// the IANA servers are authoritative for ROOT-SERVERS.NET, we are not
-	if strings.HasSuffix(name, ".root-servers.net.") {
+	if (name == "root-servers.net.") || strings.HasSuffix(name, ".root-servers.net.") {
 		return true
 	}
 	// XXX: ARPA is tricky, since some of the IANA root servers
