@@ -336,7 +336,7 @@ func pcap2ymmv(fname string, root_addresses map[string]bool) {
 		// parse the DNS packet
 		pkt_info.msg = new(dns.Msg)
 		err = pkt_info.msg.Unpack(udp.Payload)
-		if err != nil {
+		if (err != nil) && (err != dns.ErrTruncated) {
 			fmt.Fprintf(os.Stderr, "pcap2ymmv error unpacking DNS message: %s\n", err)
 			continue
 		}

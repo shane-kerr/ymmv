@@ -31,50 +31,30 @@ Installation
 The software is written in the Go language, with some optional Bourne
 shell scripts.
 
-To build the binaries yourself, you need to have Go installed.
+To build the binaries yourself, you need to have Go installed, and you
+probably want to also have git installed to fetch libraries. Because
+of the dns library dependencies, Go version 1.4 or later is required
+(for Debian "jessie", the current Debian stable, you can get this from
+the "jessie-backports" repository).
 
-You can download the source code from GitHub: 
- 
-https://github.com/shane-kerr/ymmv/archive/master.zip
+The best way to get the source and build it is to use go itself:
 
-You can also use git to clone the repository:
+    $ go get github.com/shane-kerr/ymmv/pcap2ymmv
+    $ go get github.com/shane-kerr/ymmv/ymmv
+    $ go build github.com/shane-kerr/ymmv/pcap2ymmv
+    $ go build github.com/shane-kerr/ymmv/ymmv
 
-    $ git clone https://github.com/shane-kerr/ymmv.git
-
-You need the `libpcap` library, which can be downloaded from the
-[tcpdump](http://www.tcpdump.org/) project page. On a Debian or
-Debian-derived system installation will look something like this:
-
-    $ sudo apt install libpcap-dev
-
-You need the Go language `dns` library from the awesome Miek Gieben,
-the Go language packet library and glog logging library from Google,
-the gomail e-mail library from Alex Cesaro:
-
-    $ go get github.com/miekg/dns
-    $ go get github.com/google/gopacket
-    $ go get github.com/golang/glog
-    $ go get gopkg.in/gomail.v2
-
-To build the `pcap` to `ymmv` filter/converter:
-
-    $ cd pcap2ymmv
-    $ go build
-
-To build the `ymmv` program itself:
-
-    $ cd ymmv
-    $ go build
-
-The binaries are statically linked, so you can just copy them to any
-system that you want to run them on.
+This will give you two programs in your working directory, `pcap2ymmv`
+and `ymmv`. The binaries are statically linked, so you can just copy
+them to any system that you want to run them on.
 
 Running
 =======
 
-The simplest way is with the `compare.sh` script. This requires
-`tcpdump` on the system (although this can be changed easily to
-`tshark` if preferred). A sample invocation looks like this:
+The simplest way is with the `compare.sh` script, which will be in
+the `$GOLANG/src/github.com/shane-kerr/ymmv/script/` directory. This
+requires `tcpdump` on the system (although this can be changed easily
+to `tshark` if preferred). A sample invocation looks like this:
 
     $ sudo sh scripts/compare.sh eth0
 
