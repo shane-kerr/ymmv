@@ -83,7 +83,7 @@ func lookup_root_server_addresses() map[string]bool {
 	for i := 0; i < len(root_servers)*2; i++ {
 		response, _, qname, qtype, err := resolver.Wait()
 		if err != nil {
-			log.Fatalf("Error looking up %s %s: %s", qname, qtype, err)
+			log.Fatalf("Error looking up %s %s: %s", qname, dns.TypeToString[qtype], err)
 		}
 		for _, root_address := range response.Answer {
 			switch root_address.(type) {
