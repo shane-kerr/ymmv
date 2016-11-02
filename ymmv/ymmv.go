@@ -883,7 +883,7 @@ func (df *daily_file) roll_daily_file() (bool, error) {
 		}
 
 		// open the new file
-		fname := fmt.Sprintf("%s.%4d-%2d-%2d.log", df.name, y, m, d)
+		fname := fmt.Sprintf("%s.%4d-%02d-%02d.log", df.name, y, m, d)
 		var err error
 		df.writer, err = os.OpenFile(fname, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0644)
 		if err != nil {
