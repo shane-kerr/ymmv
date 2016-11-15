@@ -669,21 +669,26 @@ func yeti_query(sync chan bool, report *report_conf, srvs *yeti_server_set,
 					rolled = true
 				}
 			}
-			// record our performance difference for this query, if desired
+			// record our performance difference for this query
 			if pf != nil {
-				var write_rtt time.Duration
-				var write_ip *net.IP
-				if rtt < fastest_rtt {
-					write_rtt = fastest_rtt
-					write_ip = fastest_ip
+				// the first answer is always the fastest when it happens
+				if fastest_rtt == 0 {
 					fastest_rtt = rtt
 					fastest_ip = &target.ip
+					// otherwise we write the *previous* fastest answer out
+				} else if rtt < fastest_rtt {
+					if pf.write_perf(org_qname, qtype,
+						iana_query_time, fastest_rtt, iana_ip, fastest_ip, false) {
+						rolled = true
+					}
+					fastest_rtt = rtt
+					fastest_ip = &target.ip
+					// answers that are not the fastest also get written out
 				} else {
-					write_rtt = rtt
-					write_ip = &target.ip
-				}
-				if pf.write_perf(org_qname, qtype, iana_query_time, write_rtt, iana_ip, write_ip, false) {
-					rolled = true
+					if pf.write_perf(org_qname, qtype,
+						iana_query_time, rtt, iana_ip, &target.ip, false) {
+						rolled = true
+					}
 				}
 			}
 			// update our smoothed round-trip time (SRTT)
@@ -692,8 +697,10 @@ func yeti_query(sync chan bool, report *report_conf, srvs *yeti_server_set,
 		glog.Flush()
 	}
 
-	if pf.write_perf(org_qname, qtype, iana_query_time, fastest_rtt, iana_ip, fastest_ip, true) {
-		rolled = true
+	if fastest_rtt > 0 {
+		if pf.write_perf(org_qname, qtype, iana_query_time, fastest_rtt, iana_ip, fastest_ip, true) {
+			rolled = true
+		}
 	}
 
 	// report yesterday's results, if we rolled to a new day
