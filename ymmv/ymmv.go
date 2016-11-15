@@ -639,7 +639,11 @@ func yeti_query(sync chan bool, report *report_conf, srvs *yeti_server_set,
 	} else {
 		qname = obfuscate_query(iana_query.Question[0].Name)
 	}
-	for _, target := range srvs.next() {
+	targets := srvs.next()
+	var fastest_rtt time.Duration = 0
+	var fastest_ip *net.IP = nil
+	var rolled bool = false
+	for _, target := range targets {
 		glog.V(2).Infof("using server selection %s @ %s", target.ns_name, target.ip)
 		server := "[" + target.ip.String() + "]:53"
 		glog.V(1).Infof("sending query '%s' %s as '%s' to %s @ %s\n",
@@ -657,7 +661,6 @@ func yeti_query(sync chan bool, report *report_conf, srvs *yeti_server_set,
 			// give a big penalty to our smoothed round-trip time (SRTT)
 			srvs.update_srtt(target.ip, time.Second/2)
 		} else {
-			var rolled bool = false
 			diffs := compare_resp(iana_resp, yeti_resp)
 			if len(diffs) > 0 {
 				glog.Infof("Differences in response for %s %s from %s @ %s\n",
@@ -666,20 +669,36 @@ func yeti_query(sync chan bool, report *report_conf, srvs *yeti_server_set,
 					rolled = true
 				}
 			}
-			// record our performance difference, if desired
+			// record our performance difference for this query, if desired
 			if pf != nil {
-				if pf.write_perf(org_qname, qtype, iana_query_time, rtt, iana_ip, &target.ip) {
+				var write_rtt time.Duration
+				var write_ip *net.IP
+				if rtt < fastest_rtt {
+					write_rtt = fastest_rtt
+					write_ip = fastest_ip
+					fastest_rtt = rtt
+					fastest_ip = &target.ip
+				} else {
+					write_rtt = rtt
+					write_ip = &target.ip
+				}
+				if pf.write_perf(org_qname, qtype, iana_query_time, write_rtt, iana_ip, write_ip, false) {
 					rolled = true
 				}
 			}
 			// update our smoothed round-trip time (SRTT)
 			srvs.update_srtt(target.ip, rtt)
-			// report the results
-			if rolled {
-				report.send_report(df.old_name, pf.old_name)
-			}
 		}
 		glog.Flush()
+	}
+
+	if pf.write_perf(org_qname, qtype, iana_query_time, fastest_rtt, iana_ip, fastest_ip, true) {
+		rolled = true
+	}
+
+	// report yesterday's results, if we rolled to a new day
+	if rolled {
+		report.send_report(df.old_name, pf.old_name)
 	}
 
 	sync <- true
@@ -919,7 +938,8 @@ func open_daily_file(name string, header string) (*daily_file, error) {
 }
 
 func (pf *daily_file) write_perf(qname string, qtype string,
-	iana_time time.Duration, yeti_time time.Duration, iana_ip *net.IP, yeti_ip *net.IP) bool {
+	iana_time time.Duration, yeti_time time.Duration, iana_ip *net.IP, yeti_ip *net.IP,
+	fastest bool) bool {
 
 	pf.lock.Lock()
 	defer pf.lock.Unlock()
@@ -929,8 +949,8 @@ func (pf *daily_file) write_perf(qname string, qtype string,
 		glog.Fatalf("Error rolling performance file %s", err)
 	}
 
-	fmt.Fprintf(pf.writer, "%s, %6.6f, %6.6f, %20s, %35s, %11s, %s\n",
-		time.Now().UTC().Format("2006-01-02T15:04:05"),
+	fmt.Fprintf(pf.writer, "%s, %7t, %6.6f, %6.6f, %20s, %35s, %11s, %s\n",
+		time.Now().UTC().Format("2006-01-02T15:04:05"), fastest,
 		iana_time.Seconds(), yeti_time.Seconds(), iana_ip, yeti_ip, qtype, qname)
 	pf.writer.Sync()
 
@@ -1034,7 +1054,7 @@ func main() {
 	var perf_file *daily_file
 	if *perf_file_name != "" {
 		var err error
-		header := "#              time, iana_rtt, yeti_rtt,            iana_root,                           yeti_root,       qtype, qname"
+		header := "#              time, fastest, iana_rtt, yeti_rtt,            iana_root,                           yeti_root,       qtype, qname"
 		perf_file, err = open_daily_file(*perf_file_name, header)
 		if err != nil {
 			fmt.Printf("Error opening performance file '%s': %s\n", perf_file_name, err)
