@@ -999,7 +999,7 @@ func main() {
 	edns_size := flag.Uint("e", 4093,
 		"set EDNS0 buffer size (set to 0 to use original query size)")
 	select_alg := flag.String("a", "rtt",
-		"set server-selection algorithm, either rtt, round-robin, random, or all")
+		"set server-selection algorithm, either rtt, round-robin, random, all, or blast")
 	perf_file_name := flag.String("p", "",
 		"base file name to store performance comparison in (default none)")
 	diff_file_name := flag.String("d", "",
@@ -1052,7 +1052,7 @@ func main() {
 	// verify our server-selection algorithm
 	_, ok := server_algorithms[*select_alg]
 	if !ok {
-		fmt.Printf("Syntax error: server algorithm '%s' is not rtt, round-robin, random, or all\n", *select_alg)
+		fmt.Printf("Syntax error: server algorithm '%s' is not rtt, round-robin, random, all, or blast\n", *select_alg)
 		flag.PrintDefaults()
 		os.Exit(1)
 	}

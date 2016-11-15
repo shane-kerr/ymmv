@@ -25,6 +25,7 @@ var server_algorithms = map[string]bool{
 	"round-robin": true,
 	"random":      true,
 	"all":         true,
+	"blast":       true,
 }
 
 // maximum TTL to use
@@ -318,6 +319,27 @@ func (srvs *yeti_server_set) next() (targets []*query_target) {
 			}
 		}
 		targets = append(targets, &query_target{ip: lowest_ip_info.ip, ns_name: ns_name})
+	} else if srvs.algorithm == "blast" {
+		var low_ip_info [3]*ip_info
+		var ns_name [3]string
+		for _, ns := range srvs.ns {
+			for _, info := range ns.ip_info {
+				for n := 0; n < len(ns_name); n++ {
+					if (low_ip_info[n] == nil) || (low_ip_info[n].srtt > info.srtt) {
+						for m := n + 1; m < len(ns_name); m++ {
+							low_ip_info[m] = low_ip_info[m-1]
+							ns_name[m] = ns_name[m-1]
+						}
+						low_ip_info[n] = info
+						ns_name[n] = ns.name
+						break
+					}
+				}
+			}
+		}
+		for p := 0; (p < len(ns_name)) && (low_ip_info[p] != nil); p++ {
+			targets = append(targets, &query_target{ip: low_ip_info[p].ip, ns_name: ns_name[p]})
+		}
 	} else {
 		var all_targets []*query_target
 		for _, ns := range srvs.ns {
