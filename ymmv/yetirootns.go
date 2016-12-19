@@ -14,9 +14,12 @@ import (
 
 // starting point to find Yeti root servers
 var yeti_root_hints = []string{
-	"bii.dns-lab.net.",
-	"yeti-ns.wide.ad.jp.",
-	"yeti-ns.tisf.net.",
+	// we use IPv6 literals here, since for some reason the Go
+	// net.DialTimeout() function seems to have stopped working
+	// for IPv6-only hostnames
+	"[240c:f:1:22::6]:53",   // bii.dns-lab.net
+	"[2001:200:1d9::35]:53", // yeti-ns.wide.ad.jp
+	"[2001:559:8000::6]:53", // yeti-ns.tisf.net
 }
 
 // allowed server-selection algorithms
