@@ -325,8 +325,8 @@ func (srvs *yeti_server_set) next() (targets []*query_target) {
 		for _, ns := range srvs.ns {
 			for _, info := range ns.ip_info {
 				for n := 0; n < len(ns_name); n++ {
-					if (low_ip_info[n] == nil) || (low_ip_info[n].srtt > info.srtt) {
-						for m := n + 1; m < len(ns_name); m++ {
+					if (low_ip_info[n] == nil) || (low_ip_info[n].srtt >= info.srtt) {
+						for m := len(ns_name)-1; m > n; m-- {
 							low_ip_info[m] = low_ip_info[m-1]
 							ns_name[m] = ns_name[m-1]
 						}
