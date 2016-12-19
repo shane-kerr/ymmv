@@ -61,10 +61,13 @@ func DnsQuery(server string, query *dns.Msg) (*dns.Msg, time.Duration, error) {
 	for i := 0; i < 3; i++ {
 		r, rtt, err = dnsClient.Exchange(query, server)
 		if err != nil {
+			// no need to retry if we get a truncated answer
 			if err == dns.ErrTruncated {
 				break
 			}
-			if !err.(net.Error).Timeout() {
+			// if we have a non-timeout error return it
+			nerr, ok := err.(net.Error)
+			if !(ok && nerr.Timeout()) {
 				return nil, 0, err
 			}
 		}
